@@ -33,7 +33,7 @@
 local AssetService = game:GetService("AssetService")
 
 local SdfMesher2 = {}
-SdfMesher2.VERSION = "2026-06-20-v2-stage5d-numkey"
+SdfMesher2.VERSION = "2026-06-20-v2-stage6b-decim"
 
 -- ─────────────────────────────────────────────────────────────
 -- Types
@@ -845,8 +845,10 @@ local function decimateQEM(
 		heapPush(heap, entry)
 	end
 
+	local pcvSeen: { [number]: boolean } = {} -- reused across calls (table.clear) to avoid per-collapse alloc
 	local function postCollapseValence(va: number, vb: number): number
-		local seen: { [number]: boolean } = {}
+		local seen = pcvSeen
+		table.clear(seen)
 		for _, ti in ipairs(vToTris[va]) do
 			if not triActive[ti] then continue end
 			local base = (ti - 1) * 3
@@ -1083,19 +1085,30 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 	end
 	local verts: { Vector3 } = {}
 	local cs = table.create(8, 0)
+	-- Narrow-band early-out: the combined field is ~1-Lipschitz, so a cell whose
+	-- first corner is farther than `skipDist` cannot contain the surface. Skip it
+	-- after ONE read instead of reading all 8 corners + the sign test. The 3×
+	-- cell-diagonal margin keeps it safe even for the approximate ellipsoid SDF
+	-- (output is identical — we only skip cells that provably have no crossing).
+	local sStrideY = nsx
+	local sStrideZ = nsx * nsy
+	local skipDist = cellSize * 5.2 -- ≈ 3 × cell diagonal
 
 	for iz = 0, cz - 1 do
 		for iy = 0, cy - 1 do
 			for ix = 0, cx - 1 do
 				-- 8 corner samples
-				cs[1] = sdf[sidx(ix, iy, iz)]
-				cs[2] = sdf[sidx(ix + 1, iy, iz)]
-				cs[3] = sdf[sidx(ix, iy + 1, iz)]
-				cs[4] = sdf[sidx(ix + 1, iy + 1, iz)]
-				cs[5] = sdf[sidx(ix, iy, iz + 1)]
-				cs[6] = sdf[sidx(ix + 1, iy, iz + 1)]
-				cs[7] = sdf[sidx(ix, iy + 1, iz + 1)]
-				cs[8] = sdf[sidx(ix + 1, iy + 1, iz + 1)]
+				local i0 = 1 + ix + sStrideY * iy + sStrideZ * iz
+					local c1 = sdf[i0]
+					if c1 > skipDist or c1 < -skipDist then continue end -- narrow-band: no crossing possible
+					cs[1] = c1
+				cs[2] = sdf[i0 + 1]
+				cs[3] = sdf[i0 + sStrideY]
+				cs[4] = sdf[i0 + sStrideY + 1]
+				cs[5] = sdf[i0 + sStrideZ]
+				cs[6] = sdf[i0 + sStrideZ + 1]
+				cs[7] = sdf[i0 + sStrideY + sStrideZ]
+				cs[8] = sdf[i0 + sStrideY + sStrideZ + 1]
 
 				local s0 = cs[1] < 0
 				local changed = false
