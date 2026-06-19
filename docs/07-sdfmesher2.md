@@ -165,28 +165,35 @@ crisp boots/helmet/gun vs ~28k smooth from v1.
 
 ## Performance
 
-Cost scales with **grid cell count** (≈ `(size/cellSize)³`); `extract` and `decimate` dominate.
-Measured (single shapes, this machine):
+Cost scales with **grid cell count** (≈ `(size/cellSize)³`). The phases:
+- **sdf** (sampling) — one field eval per grid corner.
+- **extract** — surface-nets + QEF. Narrow-banded: cells provably far from the surface are
+  skipped after a single corner read (the field is ~1-Lipschitz), so this scales with *surface*
+  area, not volume.
+- **decimate** — QEM, scales with the **raw triangle count** (= surface area / cell²). This is the
+  dominant cost at fine cells.
 
-| cell | grid | example | total |
-|---|---|---|---|
-| 0.15 | ~50³ | soldier group | 0.5–3 s |
-| 0.08 | ~113³ | box | ~7 s |
-| 0.05 | ~150³ | gun | ~6 s |
-| 0.025 | ~300³ | gun | **~120 s** ⚠️ |
+Measured (single shapes, cell 0.08, this machine): box ~5.5 s, cylinder ~6.4 s — split roughly
+`sdf 0.5 · extract 1.6 · decimate 3.9`. At cell **0.15** the same shapes are **<1 s** (the soldier
+groups bake in 0.5–3 s each). A thin feature forced to cell 0.025 is still minutes (don't).
 
 **Takeaway: stay at 0.10–0.15 unless you truly need finer.** The quality work (analytic normals,
-the smooth/sharp discriminator) is what makes coarse cells look good, so use them.
+the smooth/sharp discriminator) makes coarse cells look identical to fine ones for most shapes, so
+coarse cells are a 5–6× speedup for free. The narrow-band extract halved the *fixed-cell* extract
+cost with bit-identical output; the remaining floor is decimation, which only drops with fewer raw
+triangles → coarser cells, or (future) adaptive resolution.
 
 ---
 
 ## Limitations & roadmap (read before extending)
 
-- **Fine cells are slow** — there is no narrow-band/sparse sampling yet; the full grid is sampled
-  and every surface cell runs the QEF. **The highest-value next task is a narrow-band extraction**
-  (only process cells near the surface), which would make fine cells affordable and speed up
-  everything. (A coplanar pre-merge before QEM, and a scalar-compiled CFrame transform to drop the
-  per-sample `PointToObjectSpace` allocation, are smaller follow-on wins.)
+- **Fine cells are slow.** Extract is now narrow-banded (far cells skipped after one read), but
+  two costs remain: (a) **sampling** still evaluates the full grid — a coarse-block narrow-band
+  pass would cut it; (b) **decimation scales with raw triangle count**, which is set by cell size.
+  The decisive next task is **adaptive resolution** (coarse cells on flat regions, fine only where
+  there's curvature/detail) — that's what decouples decimate cost from cell size. A coplanar
+  pre-merge before QEM and a scalar-compiled CFrame transform (drop the per-sample
+  `PointToObjectSpace` alloc) are smaller follow-on wins.
 - **Thin, grid-diagonal tubes** can show a faint Surface-Nets ridge seam at coarse cells; finer
   cells fix it (but are slow — see above).
 - **Tight blends / blind subtracts** need either proportional resolution or authoring around
