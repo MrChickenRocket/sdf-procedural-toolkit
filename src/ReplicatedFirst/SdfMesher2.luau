@@ -33,7 +33,7 @@
 local AssetService = game:GetService("AssetService")
 
 local SdfMesher2 = {}
-SdfMesher2.VERSION = "2026-06-20-v2-stage5c-feature-discriminator"
+SdfMesher2.VERSION = "2026-06-20-v2-stage5d-numkey"
 
 -- ─────────────────────────────────────────────────────────────
 -- Types
@@ -841,7 +841,7 @@ local function decimateQEM(
 		local edge = verts[b] - verts[a]
 		cost += lengthPenaltyWeight * edge:Dot(edge)
 		local entry = { cost = cost, target = target, lo = a, hi = b }
-		edges[a .. "_" .. b] = entry
+		edges[a * 16777216 + b] = entry -- numeric key (verts << 2^24); avoids per-edge string concat
 		heapPush(heap, entry)
 	end
 
@@ -916,7 +916,7 @@ local function decimateQEM(
 		-- Stop on a feature (cost over threshold) only once we're under the
 		-- hard cap; while still over it, keep collapsing whatever is cheapest.
 		if edge.cost > maxErrorThreshold and liveTri <= hardCap then break end
-		local key = edge.lo .. "_" .. edge.hi
+		local key = edge.lo * 16777216 + edge.hi
 		if edges[key] ~= edge then continue end
 		if vertRemoved[edge.lo] or vertRemoved[edge.hi] then continue end
 		local va, vb = edge.lo, edge.hi

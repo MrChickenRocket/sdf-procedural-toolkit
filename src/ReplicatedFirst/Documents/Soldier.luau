@@ -98,7 +98,11 @@ return {
 			cell = 0.06, -- fine: a thin barrel wall + bore need a small cell (see docs/06)
 			prims = {
 				{ shape = "capsule", a = MUZZLE, b = STOCK_END, radius = 0.55 }, -- barrel
-				{ shape = "capsule", op = "subtract", a = MUZZLE - BORE_DIR * 0.2, b = MUZZLE + BORE_DIR * 1.8, radius = 0.32 }, -- muzzle bore
+				-- muzzle bore. NOTE: a subtract cutter must pass CLEAN THROUGH the
+				-- solid — a blind hole ending inside leaves a thin domed cavity the
+				-- mesher can't resolve at practical cell sizes (surface seam). So
+				-- this runs from outside the muzzle out past the stock end.
+				{ shape = "capsule", op = "subtract", a = MUZZLE - BORE_DIR * 0.5, b = STOCK_END + BORE_DIR * 0.6, radius = 0.32 },
 				{ shape = "box", center = V(2.05, 4.75, 2.95), semi = V(0.55, 0.85, 0.5), bevel = 0.22 }, -- stock
 				{ shape = "box", center = V(0.4, 5.3, 3.0), semi = V(0.34, 0.95, 0.32), bevel = 0.12 }, -- magazine
 			},
