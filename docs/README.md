@@ -75,10 +75,16 @@ write step 1 (author primitives) and step 5's color function, then return step 7
 Plus:
 - [`05-cookbook.md`](05-cookbook.md) — complete worked generators, **including the SDF fluffy cloud**.
 - [`06-gotchas.md`](06-gotchas.md) — the consolidated "this bit me" reference table. Skim it before debugging.
+- [`07-sdfmesher2.md`](07-sdfmesher2.md) — **SdfMesher2**, the second-gen *sharp-feature* mesher
+  (crisp boxes/chamfers, nested CSG, QEM minimal geometry) + the `SdfDocument` multi-part layer.
+
+> **Two meshers.** `SdfMesher` (docs `01`) is the original Surface-Nets engine — smooth, ships the
+> generators. `SdfMesher2` (doc `07`) is newer and aimed at hard-surface/mechanical content (sharp
+> edges, low poly). Pick by content: organic/foliage → v1; boxes/machined/CSG → v2.
 
 **Recommended reading order for a first build:** this README → `05-cookbook.md` (copy the
 cloud, run it) → `01` and `02` when you need to understand or extend it → `03`/`04`/`06` as
-reference.
+reference. For hard-surface work, read `07`.
 
 ---
 
@@ -89,14 +95,17 @@ them across; everything else (the generators) is application content built on to
 
 | Module | Role | Required? |
 |---|---|---|
-| `ReplicatedFirst/SdfMesher.luau` | The mesher — steps 2–6. The heart of it all. | **Yes** |
+| `ReplicatedFirst/SdfMesher.luau` | The v1 mesher (Surface Nets, smooth) — steps 2–6. | **Yes** (v1 path) |
+| `ReplicatedFirst/SdfMesher2.luau` | The v2 mesher (sharp features + QEM minimal geometry). Self-contained; only `AssetService`. See `07`. | For hard-surface/CSG |
+| `ReplicatedFirst/SdfDocument.luau` | Multi-part authoring layer: a document → a `Model` of MeshParts. `bake` (v1) / `bakeV2` (v2). | Optional |
+| `ReplicatedFirst/Documents/Soldier.luau` | Worked multi-part example (the Lego soldier), bakes through either mesher. | Example |
 | `ReplicatedFirst/WorldAnimation/GeneratorSignal.luau` | `wrap()` for generators: re-entrancy guard, server bail, done-signal. | Yes for ProceduralModels |
 | `ReplicatedFirst/ProceduralModelKicker.luau` | Throttles concurrent bakes under the EditableMesh cap; layer ordering. | Yes if you have >~4 PMs |
 | `ReplicatedFirst/ReplicatedAttributeRebake.luau` | Client-side re-bake when the server changes a replicated attribute. | Only for server-driven attrs |
 | `ReplicatedFirst/WorldAnimation/Generators/GeneratorUtil.luau` | Snow/leaf helpers, palette resolution, mesh mounting. | Optional convenience |
 
-`SdfMesher` depends only on `AssetService` and the native `vector` library — it is fully
-self-contained and has no dependency on the rest of the project.
+Both `SdfMesher` and `SdfMesher2` depend only on `AssetService` (v1 also uses the native `vector`
+library) — each is fully self-contained.
 
 ---
 

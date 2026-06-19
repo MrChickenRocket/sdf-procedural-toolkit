@@ -27,10 +27,15 @@ sdf-procedural-toolkit/
 │   ├── 03-procedural-models.md
 │   ├── 04-vertex-shading.md
 │   ├── 05-cookbook.md         ← complete worked generators (incl. the cloud)
-│   └── 06-gotchas.md          ← the consolidated "this bit me" reference
+│   ├── 06-gotchas.md          ← the consolidated "this bit me" reference
+│   └── 07-sdfmesher2.md       ← the v2 sharp-feature mesher + the document layer
 └── src/
     └── ReplicatedFirst/
-        ├── SdfMesher.luau                    ← the engine (the heart of it all)
+        ├── SdfMesher.luau                    ← v1 engine: Surface Nets, smooth (heart of it all)
+        ├── SdfMesher2.luau                   ← v2 engine: sharp features + QEM minimal geometry (docs/07)
+        ├── SdfDocument.luau                  ← multi-part authoring: document → Model of MeshParts
+        ├── Documents/
+        │   └── Soldier.luau                  ← worked multi-part example (Lego soldier)
         ├── ProceduralModelKicker.luau        ← throttles bakes under the EM cap
         ├── ReplicatedAttributeRebake.luau    ← re-bake on server-driven attrs
         └── WorldAnimation/
@@ -39,6 +44,11 @@ sdf-procedural-toolkit/
                 ├── GeneratorUtil.luau        ← snow/palette/mount helpers
                 └── FluffyCloud.luau          ← runnable example generator
 ```
+
+> **Two meshers.** `SdfMesher` (v1, docs `01`) is the original Surface-Nets engine — smooth,
+> ships the generators. `SdfMesher2` (v2, docs `07`) is newer and aimed at **hard-surface /
+> mechanical / CSG** content: crisp boxes & chamfers, nested boolean ops, and aggressive QEM
+> decimation to minimal triangle counts. Organic/foliage → v1; boxes/machined → v2.
 
 The modules are copied **verbatim** from a shipping project — known-working, heavily commented.
 
