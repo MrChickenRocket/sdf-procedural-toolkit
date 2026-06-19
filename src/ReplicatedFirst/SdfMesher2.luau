@@ -33,7 +33,7 @@
 local AssetService = game:GetService("AssetService")
 
 local SdfMesher2 = {}
-SdfMesher2.VERSION = "2026-06-20-v2-stage4c-tricap"
+SdfMesher2.VERSION = "2026-06-20-v2-stage5c-feature-discriminator"
 
 -- ─────────────────────────────────────────────────────────────
 -- Types
@@ -67,6 +67,8 @@ export type Config = {
 	cellsPerDim: number?, -- cells along the longest axis (default 48)
 	boundsPadding: number?, -- studs around the AABB (default 1.5)
 	qefBias: number?, -- regularisation toward the mass point (default 0.06)
+	featureAngle: number?, -- a cell is a sharp feature (→ QEF snap) only if its crossing
+	-- normals span more than this many degrees; below it use the smooth mass point (default 25)
 	normalEps: number?, -- gradient step as a fraction of cellSize (default 0.35)
 	sharpAngle: number?, -- degrees; a face-corner whose geometric normal diverges
 	-- from the smooth analytic normal by more than this shades crisply with the
@@ -91,6 +93,7 @@ export type Output = {
 	vertCount: number,
 	cellSize: number,
 	gridDims: Vector3,
+	timings: { sdf: number, extract: number, decimate: number, bake: number, total: number }?,
 }
 
 local SENTINEL = 1e6
@@ -1014,6 +1017,11 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 	local cfg = config or {}
 	local padding = cfg.boundsPadding or 1.5
 	local qefBias = cfg.qefBias or 0.06
+	-- A cell is a SHARP feature only if its edge-crossing normals span more than
+	-- this angle. Below it (a smooth surface — even a high-curvature blend or a
+	-- rounded rim), we use the plain mass point so the QEF can't "snap" to a
+	-- nonexistent crease and produce jagged/wavy geometry.
+	local cosFeature = math.cos(math.rad(cfg.featureAngle or 25))
 	-- Small gradient stencil: a large one straddles sharp creases and averages
 	-- two facet normals into a bogus one (fake-bevel shading). Keep it tight so
 	-- the central difference samples one facet at a time. (Doubles are precise
@@ -1045,6 +1053,7 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 	local cx, cy, cz = nsx - 1, nsy - 1, nsz - 1 -- cells per axis
 
 	-- Sample the field at every grid corner.
+	local tSample0 = os.clock()
 	local sdf = table.create(nsx * nsy * nsz, SENTINEL)
 	local function sidx(x: number, y: number, z: number): number
 		return 1 + x + nsx * y + nsx * nsy * z
@@ -1060,6 +1069,7 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 		end
 	end
 
+	local tExtract0 = os.clock()
 	-- Analytic gradient → outward normal (exact at creases; one pass, no eps).
 	local function gradAt(wx: number, wy: number, wz: number): (number, number, number)
 		local _, gx, gy, gz = evalNodeGrad(root, wx, wy, wz)
@@ -1106,6 +1116,7 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 				local a11, a12, a13, a22, a23, a33 = 0, 0, 0, 0, 0, 0
 				local b1, b2, b3 = 0, 0, 0
 				local mx, my, mz, cnt = 0, 0, 0, 0
+					local n0x, n0y, n0z, minDot = 0, 0, 0, 1 -- normal-cone spread in this cell
 
 				for _, e in ipairs(EDGES) do
 					local i1, i2 = e[1], e[2]
@@ -1117,6 +1128,7 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 						local wy = cellOY + (p0.Y + (p1.Y - p0.Y) * t) * cellSize
 						local wz = cellOZ + (p0.Z + (p1.Z - p0.Z) * t) * cellSize
 						local nx, ny, nz = gradAt(wx, wy, wz)
+							if cnt == 0 then n0x, n0y, n0z = nx, ny, nz else local dp = nx * n0x + ny * n0y + nz * n0z if dp < minDot then minDot = dp end end
 						local d = nx * wx + ny * wy + nz * wz
 						a11 += nx * nx; a12 += nx * ny; a13 += nx * nz
 						a22 += ny * ny; a23 += ny * nz; a33 += nz * nz
@@ -1142,6 +1154,9 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 				vx = math.clamp(vx :: number, cellOX, cellOX + cellSize)
 				vy = math.clamp(vy :: number, cellOY, cellOY + cellSize)
 				vz = math.clamp(vz :: number, cellOZ, cellOZ + cellSize)
+					-- Smooth cell: override the QEF with the plain mass point so
+					-- curvature/blends/rims aren't snapped into jagged fake-creases.
+					if minDot >= cosFeature then vx, vy, vz = imx, imy, imz end
 
 				table.insert(verts, Vector3.new(vx, vy, vz))
 				cellVert[cidx(ix, iy, iz)] = #verts
@@ -1231,6 +1246,8 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 	-- output never hits the EM triangle cap and the cap effectively applies to
 	-- the simplified result. Flat regions collapse to a few large triangles;
 	-- sharp edges/corners survive and get straightened.
+	local tDec0 = os.clock()
+	local rawTris = #tris / 3
 	if cfg.decimate ~= false then
 		-- Default to ERROR-driven minimal geometry: targetReduction 1.0 means
 		-- "collapse everything the error gate allows". qemMaxError is then the
@@ -1240,29 +1257,32 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 		local maxErr = cfg.qemMaxError or (cellSize * cellSize * 3)
 		verts, tris = decimateQEM(verts, tris, target, maxErr, cfg.qemLengthPenalty or 0.001, cfg.qemMaxValence or 16, cfg.triCap or 20000)
 	end
+	local tDec1 = os.clock()
 	if #tris == 0 then
 		return nil, "No surface after decimation"
 	end
 
-	-- Shading normals on the (decimated) mesh: geometric face normals, a smooth
-	-- per-vertex normal = Σ incident face normals, then a per-face-corner split
-	-- — smooth where the face agrees with the vertex normal (curves stay
-	-- smooth), crisp face normal at hard edges (clean shading discontinuity).
+	-- Shading normals. Per-vertex normal comes from the ANALYTIC field gradient
+	-- (exact, and smooth even where the decimated triangulation is uneven — so
+	-- curved surfaces don't band/wave from irregular collapses). Then per
+	-- face-corner: if the triangle's geometric normal agrees with the analytic
+	-- normal within `sharpAngle`, use the smooth analytic one; otherwise (a hard
+	-- edge) use the crisp face normal. Geometric smoothing-group normals were
+	-- the source of the banding — they bake any triangulation unevenness into
+	-- the shading.
 	local triCount = #tris / 3
 	local faceN = table.create(triCount)
-	local vAdj: { { number } } = table.create(#verts)
-	for i = 1, #verts do
-		vAdj[i] = {}
-	end
 	for fi = 1, triCount do
 		local base = (fi - 1) * 3
-		local i1, i2, i3 = tris[base + 1], tris[base + 2], tris[base + 3]
-		local fn = (verts[i2] - verts[i1]):Cross(verts[i3] - verts[i1])
+		local fn = (verts[tris[base + 2]] - verts[tris[base + 1]]):Cross(verts[tris[base + 3]] - verts[tris[base + 1]])
 		local m = fn.Magnitude
 		faceN[fi] = if m > 1e-9 then fn / m else Vector3.yAxis
-		table.insert(vAdj[i1], fi)
-		table.insert(vAdj[i2], fi)
-		table.insert(vAdj[i3], fi)
+	end
+	local vNormal = table.create(#verts)
+	for i = 1, #verts do
+		local v = verts[i]
+		local _, gx, gy, gz = evalNodeGrad(root, v.X, v.Y, v.Z)
+		vNormal[i] = Vector3.new(gx, gy, gz)
 	end
 
 	local em = AssetService:CreateEditableMesh()
@@ -1283,31 +1303,12 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 		local fid = fids[fi]
 		for k = 1, 3 do
 			local vi = tris[base + k]
-			-- Smoothing-group normal: average ONLY the incident faces within
-			-- `sharpAngle` of THIS face. On a flat/curved region that's all of
-			-- them (smooth); across a hard edge the other side is excluded, so
-			-- the corner keeps its own face normal (crisp). Comparing to a
-			-- global average would miss edges whose halves straddle it.
-			local sx, sy, sz = 0, 0, 0
-			local maxDiv = 0
-			for _, g in ipairs(vAdj[vi]) do
-				local ng = faceN[g]
-				local dp = fn:Dot(ng)
-				if dp >= cosSharp then
-					sx += ng.X
-					sy += ng.Y
-					sz += ng.Z
-				end
-				local div = 1 - dp
-				if div > maxDiv then
-					maxDiv = div
-				end
-			end
-			local mm = math.sqrt(sx * sx + sy * sy + sz * sz)
-			local nrm = if mm > 1e-6 then Vector3.new(sx / mm, sy / mm, sz / mm) else fn
+			local an = vNormal[vi]
+			local dp = fn:Dot(an)
+			local nrm = if dp >= cosSharp then an else fn
 			em:SetVertexFaceNormal(vids[vi], fid, em:AddNormal(nrm))
 			if colorFn then
-				em:SetVertexFaceColor(vids[vi], fid, em:AddColor(colorFn(verts[vi], nrm, {}, math.clamp(maxDiv, 0, 1)), 1))
+				em:SetVertexFaceColor(vids[vi], fid, em:AddColor(colorFn(verts[vi], nrm, {}, math.clamp(1 - dp, 0, 1)), 1))
 			end
 		end
 	end
@@ -1350,13 +1351,31 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 	if cfg.renderFidelity then pcall(function() (meshPart :: any).RenderFidelity = cfg.renderFidelity end) end
 	if cfg.collisionFidelity then pcall(function() (meshPart :: any).CollisionFidelity = cfg.collisionFidelity end) end
 
+	local tEnd = os.clock()
+	local finalTris = #tris / 3
+	print(string.format(
+		"[SdfMesher2] cell %.3f | grid %dx%dx%d | %d→%d tris | sdf %.0fms  extract %.0fms  decimate %.0fms  bake %.0fms  total %.0fms",
+		cellSize, cx, cy, cz, rawTris, finalTris,
+		(tExtract0 - tSample0) * 1000,
+		(tDec0 - tExtract0) * 1000,
+		(tDec1 - tDec0) * 1000,
+		(tEnd - tDec1) * 1000,
+		(tEnd - tSample0) * 1000
+	))
 	return {
 		meshPart = meshPart,
-		triCount = #tris / 3,
+		triCount = finalTris,
 		vertCount = #verts,
 		cellSize = cellSize,
 		gridDims = Vector3.new(cx, cy, cz),
-	}, string.format("%d tris @ %.3f cells", #tris / 3, cellSize)
+		timings = {
+			sdf = tExtract0 - tSample0,
+			extract = tDec0 - tExtract0,
+			decimate = tDec1 - tDec0,
+			bake = tEnd - tDec1,
+			total = tEnd - tSample0,
+		},
+	}, string.format("%d tris @ %.3f cells", finalTris, cellSize)
 end
 
 return SdfMesher2
