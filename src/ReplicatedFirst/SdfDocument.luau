@@ -19,6 +19,7 @@
 -- `origin`; see docs/06 → "Assembling multi-part figures").
 
 local SdfMesher = require(script.Parent.SdfMesher)
+local SdfMesher2 = require(script.Parent.SdfMesher2)
 
 local SdfDocument = {}
 
@@ -223,6 +224,100 @@ function SdfDocument.bake(doc: Document, opts: BakeOpts?): (Model, { { name: str
 		end
 	end
 
+	if o.primaryGroup then
+		model.PrimaryPart = model:FindFirstChild(o.primaryGroup) :: BasePart?
+	end
+	if o.parent then
+		model.Parent = o.parent
+	end
+	return model, stats
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- v2 path: compile a group's flat prim list into an SdfMesher2 op-graph and
+-- bake through the sharp-feature mesher (analytic gradients, QEF sharp snap,
+-- QEM minimal geometry). Same document; different engine.
+-- ─────────────────────────────────────────────────────────────
+
+local function primToNode(p: Prim): SdfMesher2.Node
+	local shape = p.shape
+	if shape == "ellipsoid" or shape == "sphere" then
+		return { shape = "ellipsoid", center = centerOf(p), semi = p.semi or (p.radius and Vector3.one * p.radius) }
+	elseif shape == "box" then
+		local n: SdfMesher2.Node = { shape = "box", semi = p.semi, rounding = p.rounding, bevel = p.bevel }
+		if p.cframe then n.cframe = p.cframe else n.center = centerOf(p) end
+		return n
+	elseif shape == "capsule" then
+		return { shape = "capsule", a = p.a, b = p.b, radius = p.radius }
+	elseif shape == "cylinder" then
+		local n: SdfMesher2.Node = { shape = "cylinder", radius = p.radius, height = p.height, rounding = p.rounding, bevel = p.bevel }
+		if p.cframe then n.cframe = p.cframe else n.center = centerOf(p) end
+		return n
+	end
+	error(`toGraph: shape '{tostring(shape)}' not supported by SdfMesher2`)
+end
+
+-- One group → one op-graph: adds blend together (smoothUnion if blend>0),
+-- then any `op="subtract"` prims carve.
+function SdfDocument.toGraph(group: Group): SdfMesher2.Node
+	local adds, subs = {}, {}
+	for _, p in ipairs(group.prims) do
+		if p.op == "subtract" then
+			table.insert(subs, primToNode(p))
+		else
+			table.insert(adds, primToNode(p))
+		end
+	end
+	assert(#adds > 0, `group '{group.name}' has no add primitives`)
+	local addNode: SdfMesher2.Node
+	if #adds == 1 then
+		addNode = adds[1]
+	elseif (group.blend or 0) > 0 then
+		addNode = { op = "smoothUnion", blend = group.blend, children = adds }
+	else
+		addNode = { op = "union", children = adds }
+	end
+	if #subs == 0 then
+		return addNode
+	end
+	local children = { addNode }
+	for _, s in ipairs(subs) do
+		table.insert(children, s)
+	end
+	return { op = "subtract", children = children }
+end
+
+function SdfDocument.bakeV2(doc: Document, opts: BakeOpts?): (Model, { { name: string, tris: number } })
+	local o = opts or {}
+	local origin = o.origin or Vector3.zero
+	local defaults = doc.defaults or {}
+	local sun = o.sun or doc.sun or Vector3.new(0.5, 0.9, 0.35).Unit
+	local model = Instance.new("Model")
+	model.Name = (doc.name or "SdfDocument") .. "_v2"
+	local stats = {}
+	for _, g in ipairs(doc.groups) do
+		local graph = SdfDocument.toGraph(g)
+		local colorFn = g.colorFn or SdfDocument.makeShader(g.color or Color3.new(0.6, 0.6, 0.6), sun)
+		local res, msg = SdfMesher2.build(graph, {
+			cellSize = g.cell or defaults.cell or 0.15,
+			vertexColorFn = colorFn,
+			renderFidelity = g.renderFidelity or Enum.RenderFidelity.Precise,
+			collisionFidelity = g.collisionFidelity or Enum.CollisionFidelity.Box,
+		})
+		if not res then
+			warn(`[SdfDocument.bakeV2] group '{g.name}' failed: {tostring(msg)}`)
+		else
+			local mp = res.meshPart
+			mp.Name = g.name
+			mp.Anchored = true
+			if g.material then
+				mp.Material = g.material
+			end
+			mp.Position = origin
+			mp.Parent = model
+			table.insert(stats, { name = g.name, tris = res.triCount })
+		end
+	end
 	if o.primaryGroup then
 		model.PrimaryPart = model:FindFirstChild(o.primaryGroup) :: BasePart?
 	end

@@ -33,7 +33,7 @@
 local AssetService = game:GetService("AssetService")
 
 local SdfMesher2 = {}
-SdfMesher2.VERSION = "2026-06-19-v2-stage3c-minimal"
+SdfMesher2.VERSION = "2026-06-20-v2-stage4c-tricap"
 
 -- ─────────────────────────────────────────────────────────────
 -- Types
@@ -57,6 +57,9 @@ export type Node = {
 	op: string?, -- "union" | "smoothUnion" | "subtract" | "intersect"
 	blend: number?, -- smoothUnion blend radius (studs)
 	children: { Node }?,
+	-- internal: per-node AABB cache for culling (set by build via precompute)
+	_lo: Vector3?,
+	_hi: Vector3?,
 }
 
 export type Config = {
@@ -72,6 +75,7 @@ export type Config = {
 	-- Decimation (QEM) — on by default; turns the dense voxel mesh into minimal
 	-- geometry while preserving sharp edges.
 	decimate: boolean?,
+	triCap: number?, -- hard ceiling on output triangles (default 20000; keeps under the EditableMesh cap)
 	qemTargetReduction: number?, -- fraction of tris to try to remove (default 0.92)
 	qemMaxError: number?, -- stop collapsing once cost exceeds this (default cellSize²·3)
 	qemLengthPenalty: number?,
@@ -185,6 +189,17 @@ local function smin(a: number, b: number, k: number): number
 end
 
 local function evalNode(node: Node, px: number, py: number, pz: number): number
+	-- AABB cull: a point outside this node's (margin-expanded) box is "far
+	-- outside" in every op context — min won't pick it, subtract won't carve,
+	-- intersect is outside anyway. So returning SENTINEL is always correct and
+	-- skips the whole subtree. Big win for multi-primitive groups + padding.
+	local lo = node._lo
+	if lo then
+		local hi = node._hi :: Vector3
+		if px < lo.X or px > hi.X or py < lo.Y or py > hi.Y or pz < lo.Z or pz > hi.Z then
+			return SENTINEL
+		end
+	end
 	local shape = node.shape
 	if shape then
 		if shape == "sphere" then
@@ -207,26 +222,34 @@ local function evalNode(node: Node, px: number, py: number, pz: number): number
 			return capsuleSDF(px, py, pz, node.a or Vector3.zero, node.b or Vector3.zero, node.radius or 1)
 		elseif shape == "cylinder" then
 			-- Capped (flat-ended) cylinder along the frame's up axis. iq
-			-- sdCappedCylinder in (radial, axial) space; `bevel` chamfers the
-			-- rim (the single outer corner in (r,|y|) space, both ends).
+			-- sdCappedCylinder in (radial, axial) space. `bevel` chamfers the
+			-- rim (hard 45° facet, both ends); `rounding` rounds it (soft bevel)
+			-- by shrinking (R,h) and offsetting — bevel wins if both set.
 			local R = node.radius or 1
 			local h = (node.height or 2) * 0.5
 			local cf = node.cframe or CFrame.new(node.center or Vector3.zero)
 			local lp = cf:PointToObjectSpace(Vector3.new(px, py, pz))
 			local r = math.sqrt(lp.X * lp.X + lp.Z * lp.Z)
-			local dr = r - R
-			local dy = (if lp.Y >= 0 then lp.Y else -lp.Y) - h
+			local ay = if lp.Y >= 0 then lp.Y else -lp.Y
+			local bevel = node.bevel
+			local rounding = node.rounding
+			if bevel and bevel > 0 then
+				local dr, dy = r - R, ay - h
+				local drp = if dr > 0 then dr else 0
+				local dyp = if dy > 0 then dy else 0
+				local d = math.min(if dr > dy then dr else dy, 0) + math.sqrt(drp * drp + dyp * dyp)
+				local edge = (dr + dy + bevel) * 0.70710678
+				return if edge > d then edge else d
+			elseif rounding and rounding > 0 then
+				local dr, dy = r - (R - rounding), ay - (h - rounding)
+				local drp = if dr > 0 then dr else 0
+				local dyp = if dy > 0 then dy else 0
+				return math.min(if dr > dy then dr else dy, 0) + math.sqrt(drp * drp + dyp * dyp) - rounding
+			end
+			local dr, dy = r - R, ay - h
 			local drp = if dr > 0 then dr else 0
 			local dyp = if dy > 0 then dy else 0
-			local outside = math.sqrt(drp * drp + dyp * dyp)
-			local inside = math.min(if dr > dy then dr else dy, 0)
-			local d = inside + outside
-			local bevel = node.bevel
-			if bevel and bevel > 0 then
-				local edge = (dr + dy + bevel) * 0.70710678
-				if edge > d then d = edge end
-			end
-			return d
+			return math.min(if dr > dy then dr else dy, 0) + math.sqrt(drp * drp + dyp * dyp)
 		end
 		error("unknown shape: " .. tostring(shape))
 	end
@@ -264,6 +287,270 @@ local function evalNode(node: Node, px: number, py: number, pz: number): number
 			if di > d then d = di end
 		end
 		return d
+	end
+	error("unknown op: " .. tostring(op))
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- Analytic gradient (exact outward normal from the field). Replaces the
+-- numerical central difference: exact at creases (no stencil straddling),
+-- and one pass instead of 6 evals per sample. Drives QEF vertex placement.
+-- ─────────────────────────────────────────────────────────────
+
+-- Outward gradient direction for a box from its q = abs(localPoint) - semi.
+-- Hoisted (not an inner closure) so it isn't reallocated per call.
+local function boxGradDir(qx: number, qy: number, qz: number, sgx: number, sgy: number, sgz: number): (number, number, number)
+	if qx > 0 or qy > 0 or qz > 0 then
+		local gx = (if qx > 0 then qx else 0) * sgx
+		local gy = (if qy > 0 then qy else 0) * sgy
+		local gz = (if qz > 0 then qz else 0) * sgz
+		local m = math.sqrt(gx * gx + gy * gy + gz * gz)
+		if m < 1e-9 then return sgx, 0, 0 end
+		return gx / m, gy / m, gz / m
+	elseif qx >= qy and qx >= qz then
+		return sgx, 0, 0
+	elseif qy >= qz then
+		return 0, sgy, 0
+	else
+		return 0, 0, sgz
+	end
+end
+
+-- 2D (radial, axial) outward gradient for a capped/cylinder profile.
+local function cappedGrad2(dr: number, dy: number): (number, number)
+	if dr > 0 or dy > 0 then
+		local a = if dr > 0 then dr else 0
+		local b = if dy > 0 then dy else 0
+		local m = math.sqrt(a * a + b * b)
+		if m < 1e-9 then return 1, 0 end
+		return a / m, b / m
+	elseif dr >= dy then
+		return 1, 0
+	else
+		return 0, 1
+	end
+end
+
+-- Box, local frame → d + local gradient (normalized). Sharp / rounded / bevel.
+local function boxLocalGrad(lx, ly, lz, sx, sy, sz, rounding, bevel): (number, number, number, number)
+	local sgx = if lx >= 0 then 1 else -1
+	local sgy = if ly >= 0 then 1 else -1
+	local sgz = if lz >= 0 then 1 else -1
+	local ax, ay, az = lx * sgx, ly * sgy, lz * sgz
+	if bevel and bevel > 0 then
+		local qx, qy, qz = ax - sx, ay - sy, az - sz
+		local qxp = if qx > 0 then qx else 0
+		local qyp = if qy > 0 then qy else 0
+		local qzp = if qz > 0 then qz else 0
+		local outside = math.sqrt(qxp * qxp + qyp * qyp + qzp * qzp)
+		local mYZ = if qy > qz then qy else qz
+		local mQ = if qx > mYZ then qx else mYZ
+		local inside = if mQ < 0 then mQ else 0
+		local d, which = outside + inside, 0
+		local exy = (qx + qy + bevel) * 0.70710678
+		local eyz = (qy + qz + bevel) * 0.70710678
+		local exz = (qx + qz + bevel) * 0.70710678
+		if exy > d then d, which = exy, 1 end
+		if eyz > d then d, which = eyz, 2 end
+		if exz > d then d, which = exz, 3 end
+		local s = 0.70710678
+		if which == 1 then
+			return d, sgx * s, sgy * s, 0
+		elseif which == 2 then
+			return d, 0, sgy * s, sgz * s
+		elseif which == 3 then
+			return d, sgx * s, 0, sgz * s
+		end
+		local gx, gy, gz = boxGradDir(qx, qy, qz, sgx, sgy, sgz)
+		return d, gx, gy, gz
+	elseif rounding and rounding > 0 then
+		local qx, qy, qz = ax - sx + rounding, ay - sy + rounding, az - sz + rounding
+		local qxp = if qx > 0 then qx else 0
+		local qyp = if qy > 0 then qy else 0
+		local qzp = if qz > 0 then qz else 0
+		local outside = math.sqrt(qxp * qxp + qyp * qyp + qzp * qzp)
+		local mYZ = if qy > qz then qy else qz
+		local mQ = if qx > mYZ then qx else mYZ
+		local inside = if mQ < 0 then mQ else 0
+		local gx, gy, gz = boxGradDir(qx, qy, qz, sgx, sgy, sgz)
+		return outside + inside - rounding, gx, gy, gz
+	end
+	local qx, qy, qz = ax - sx, ay - sy, az - sz
+	local qxp = if qx > 0 then qx else 0
+	local qyp = if qy > 0 then qy else 0
+	local qzp = if qz > 0 then qz else 0
+	local outside = math.sqrt(qxp * qxp + qyp * qyp + qzp * qzp)
+	local mYZ = if qy > qz then qy else qz
+	local mQ = if qx > mYZ then qx else mYZ
+	local inside = if mQ < 0 then mQ else 0
+	local gx, gy, gz = boxGradDir(qx, qy, qz, sgx, sgy, sgz)
+	return outside + inside, gx, gy, gz
+end
+
+-- Cylinder, local frame → d + local gradient (normalized). Sharp / rounded / bevel rim.
+local function cylLocalGrad(lx, ly, lz, R, h, rounding, bevel): (number, number, number, number)
+	local r = math.sqrt(lx * lx + lz * lz)
+	local sgy = if ly >= 0 then 1 else -1
+	local ruX, ruZ = 1, 0
+	if r > 1e-9 then
+		ruX, ruZ = lx / r, lz / r
+	end
+	local ay = ly * sgy
+	local d, gr, gay
+	if bevel and bevel > 0 then
+		local dr, dy = r - R, ay - h
+		local op = if dr > 0 then dr else 0
+		local oq = if dy > 0 then dy else 0
+		local cd = math.min(if dr > dy then dr else dy, 0) + math.sqrt(op * op + oq * oq)
+		local edge = (dr + dy + bevel) * 0.70710678
+		if edge > cd then
+			d, gr, gay = edge, 0.70710678, 0.70710678
+		else
+			d, gr, gay = cd, cappedGrad2(dr, dy)
+		end
+	elseif rounding and rounding > 0 then
+		local dr, dy = r - (R - rounding), ay - (h - rounding)
+		local op = if dr > 0 then dr else 0
+		local oq = if dy > 0 then dy else 0
+		d = math.min(if dr > dy then dr else dy, 0) + math.sqrt(op * op + oq * oq) - rounding
+		gr, gay = cappedGrad2(dr, dy)
+	else
+		local dr, dy = r - R, ay - h
+		local op = if dr > 0 then dr else 0
+		local oq = if dy > 0 then dy else 0
+		d = math.min(if dr > dy then dr else dy, 0) + math.sqrt(op * op + oq * oq)
+		gr, gay = cappedGrad2(dr, dy)
+	end
+	local gx, gz = gr * ruX, gr * ruZ
+	local gyy = gay * sgy
+	local m = math.sqrt(gx * gx + gyy * gyy + gz * gz)
+	if m < 1e-9 then
+		return d, 0, 1, 0
+	end
+	return d, gx / m, gyy / m, gz / m
+end
+
+local function evalNodeGrad(node: Node, px: number, py: number, pz: number): (number, number, number, number)
+	local lo = node._lo
+	if lo then
+		local hi = node._hi :: Vector3
+		if px < lo.X or px > hi.X or py < lo.Y or py > hi.Y or pz < lo.Z or pz > hi.Z then
+			return SENTINEL, 0, 1, 0
+		end
+	end
+	local shape = node.shape
+	if shape then
+		if shape == "sphere" then
+			local c = node.center or Vector3.zero
+			local dx, dy, dz = px - c.X, py - c.Y, pz - c.Z
+			local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if len > 1e-9 then
+				return len - (node.radius or 1), dx / len, dy / len, dz / len
+			end
+			return len - (node.radius or 1), 0, 1, 0
+		elseif shape == "ellipsoid" then
+			local c = node.center or Vector3.zero
+			local s = node.semi or Vector3.one
+			local ex, ey, ez = px - c.X, py - c.Y, pz - c.Z
+			local d = ellipsoidSDF(ex, ey, ez, s.X, s.Y, s.Z)
+			local gx, gy, gz = ex / (s.X * s.X), ey / (s.Y * s.Y), ez / (s.Z * s.Z)
+			local m = math.sqrt(gx * gx + gy * gy + gz * gz)
+			if m > 1e-9 then
+				return d, gx / m, gy / m, gz / m
+			end
+			return d, 0, 1, 0
+		elseif shape == "box" then
+			local s = node.semi or Vector3.one
+			if node.cframe then
+				local lp = node.cframe:PointToObjectSpace(Vector3.new(px, py, pz))
+				local d, gx, gy, gz = boxLocalGrad(lp.X, lp.Y, lp.Z, s.X, s.Y, s.Z, node.rounding, node.bevel)
+				local gw = node.cframe:VectorToWorldSpace(Vector3.new(gx, gy, gz))
+				return d, gw.X, gw.Y, gw.Z
+			end
+			local c = node.center or Vector3.zero
+			return boxLocalGrad(px - c.X, py - c.Y, pz - c.Z, s.X, s.Y, s.Z, node.rounding, node.bevel)
+		elseif shape == "capsule" then
+			local a = node.a or Vector3.zero
+			local b = node.b or Vector3.zero
+			local pax, pay, paz = px - a.X, py - a.Y, pz - a.Z
+			local bax, bay, baz = b.X - a.X, b.Y - a.Y, b.Z - a.Z
+			local l2 = bax * bax + bay * bay + baz * baz
+			local hh = if l2 > 1e-10 then math.clamp((pax * bax + pay * bay + paz * baz) / l2, 0, 1) else 0
+			local dx, dy, dz = pax - bax * hh, pay - bay * hh, paz - baz * hh
+			local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if len > 1e-9 then
+				return len - (node.radius or 1), dx / len, dy / len, dz / len
+			end
+			return len - (node.radius or 1), 0, 1, 0
+		elseif shape == "cylinder" then
+			local R = node.radius or 1
+			local h = (node.height or 2) * 0.5
+			local cf = node.cframe or CFrame.new(node.center or Vector3.zero)
+			local lp = cf:PointToObjectSpace(Vector3.new(px, py, pz))
+			local d, gx, gy, gz = cylLocalGrad(lp.X, lp.Y, lp.Z, R, h, node.rounding, node.bevel)
+			local gw = cf:VectorToWorldSpace(Vector3.new(gx, gy, gz))
+			return d, gw.X, gw.Y, gw.Z
+		end
+		error("unknown shape: " .. tostring(shape))
+	end
+
+	local op = node.op
+	local ch = node.children or {}
+	if op == "union" then
+		local bd, bx, by, bz = SENTINEL, 0, 1, 0
+		for _, c in ipairs(ch) do
+			local d, gx, gy, gz = evalNodeGrad(c, px, py, pz)
+			if d < bd then
+				bd, bx, by, bz = d, gx, gy, gz
+			end
+		end
+		return bd, bx, by, bz
+	elseif op == "smoothUnion" then
+		local k = node.blend or 0
+		local first = true
+		local bd, bx, by, bz = SENTINEL, 0, 1, 0
+		for _, c in ipairs(ch) do
+			local d, gx, gy, gz = evalNodeGrad(c, px, py, pz)
+			if first then
+				bd, bx, by, bz, first = d, gx, gy, gz, false
+			elseif k <= 0 or math.abs(bd - d) >= k then
+				if d < bd then
+					bd, bx, by, bz = d, gx, gy, gz
+				end
+			else
+				local diff = bd - d
+				local hh = 1 - math.abs(diff) / k
+				local mn = if bd < d then bd else d
+				local mix = math.clamp(0.5 + 0.5 * diff / k, 0, 1) -- weight of new child
+				local nx = bx * (1 - mix) + gx * mix
+				local ny = by * (1 - mix) + gy * mix
+				local nz = bz * (1 - mix) + gz * mix
+				local m = math.sqrt(nx * nx + ny * ny + nz * nz)
+				if m < 1e-9 then
+					m = 1
+				end
+				bd, bx, by, bz = mn - hh * hh * k * 0.25, nx / m, ny / m, nz / m
+			end
+		end
+		return bd, bx, by, bz
+	elseif op == "subtract" then
+		local d, gx, gy, gz = if ch[1] then evalNodeGrad(ch[1], px, py, pz) else SENTINEL, 0, 1, 0
+		for i = 2, #ch do
+			local dc, cx, cy, cz = evalNodeGrad(ch[i], px, py, pz)
+			if -dc > d then
+				d, gx, gy, gz = -dc, -cx, -cy, -cz
+			end
+		end
+		return d, gx, gy, gz
+	elseif op == "intersect" then
+		local bd, bx, by, bz = -SENTINEL, 0, 1, 0
+		for _, c in ipairs(ch) do
+			local d, gx, gy, gz = evalNodeGrad(c, px, py, pz)
+			if d > bd then
+				bd, bx, by, bz = d, gx, gy, gz
+			end
+		end
+		return bd, bx, by, bz
 	end
 	error("unknown op: " .. tostring(op))
 end
@@ -330,6 +617,36 @@ local function nodeAABB(node: Node, minV: Vector3, maxV: Vector3): (Vector3, Vec
 		minV, maxV = nodeAABB(c, minV, maxV)
 	end
 	return minV, maxV
+end
+
+local function maxBlendOf(node: Node): number
+	local mx = if node.op == "smoothUnion" and node.blend then node.blend else 0
+	for _, c in ipairs(node.children or {}) do
+		local cm = maxBlendOf(c)
+		if cm > mx then mx = cm end
+	end
+	return mx
+end
+
+-- Stamp each node with its AABB (expanded by `margin`) for cull tests in
+-- evalNode/evalNodeGrad. Returns the UNexpanded AABB so parents union tightly.
+local BIG = Vector3.new(SENTINEL, SENTINEL, SENTINEL)
+local function precomputeAABB(node: Node, margin: number): (Vector3, Vector3)
+	local lo, hi
+	if node.shape then
+		lo, hi = nodeAABB(node, BIG, -BIG)
+	else
+		lo, hi = BIG, -BIG
+		for _, c in ipairs(node.children or {}) do
+			local clo, chi = precomputeAABB(c, margin)
+			lo = Vector3.new(math.min(lo.X, clo.X), math.min(lo.Y, clo.Y), math.min(lo.Z, clo.Z))
+			hi = Vector3.new(math.max(hi.X, chi.X), math.max(hi.Y, chi.Y), math.max(hi.Z, chi.Z))
+		end
+	end
+	local m = Vector3.one * margin
+	node._lo = lo - m
+	node._hi = hi + m
+	return lo, hi
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -469,7 +786,8 @@ local function decimateQEM(
 	targetReduction: number,
 	maxErrorThreshold: number,
 	lengthPenaltyWeight: number,
-	maxValence: number
+	maxValence: number,
+	hardCap: number -- never leave more than this many triangles (forces collapses past maxError while over it)
 ): ({ Vector3 }, { number })
 	local nVerts = #verts
 	local nTris = #tris / 3
@@ -592,7 +910,9 @@ local function decimateQEM(
 	while liveTri > targetTri do
 		local edge = heapPop(heap)
 		if not edge then break end
-		if edge.cost > maxErrorThreshold then break end
+		-- Stop on a feature (cost over threshold) only once we're under the
+		-- hard cap; while still over it, keep collapsing whatever is cheapest.
+		if edge.cost > maxErrorThreshold and liveTri <= hardCap then break end
 		local key = edge.lo .. "_" .. edge.hi
 		if edges[key] ~= edge then continue end
 		if vertRemoved[edge.lo] or vertRemoved[edge.hi] then continue end
@@ -713,7 +1033,10 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 	end
 
 	local cellSize = cfg.cellSize or (maxDim / (cfg.cellsPerDim or 48))
-	local eps = normalEpsFrac * cellSize
+
+	-- Stamp per-node AABBs so evalNode/evalNodeGrad can cull whole subtrees for
+	-- points outside them. Margin covers smooth-blend bulge + a cell of slack.
+	precomputeAABB(root, maxBlendOf(root) + cellSize)
 
 	local minX, minY, minZ = minV.X, minV.Y, minV.Z
 	local nsx = math.ceil(size.X / cellSize) + 1 -- samples per axis
@@ -737,16 +1060,10 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 		end
 	end
 
-	-- Gradient (central differences) → outward normal.
+	-- Analytic gradient → outward normal (exact at creases; one pass, no eps).
 	local function gradAt(wx: number, wy: number, wz: number): (number, number, number)
-		local gx = evalNode(root, wx + eps, wy, wz) - evalNode(root, wx - eps, wy, wz)
-		local gy = evalNode(root, wx, wy + eps, wz) - evalNode(root, wx, wy - eps, wz)
-		local gz = evalNode(root, wx, wy, wz + eps) - evalNode(root, wx, wy, wz - eps)
-		local m = math.sqrt(gx * gx + gy * gy + gz * gz)
-		if m < 1e-9 then
-			return 0, 1, 0
-		end
-		return gx / m, gy / m, gz / m
+		local _, gx, gy, gz = evalNodeGrad(root, wx, wy, wz)
+		return gx, gy, gz
 	end
 
 	-- Per-cell dual vertex via regularised QEF.
@@ -921,7 +1238,7 @@ function SdfMesher2.build(root: Node, config: Config?): (Output?, string)
 		-- edges (high cost) survive. The flip/valence guards keep it manifold.
 		local target = cfg.qemTargetReduction or 1.0
 		local maxErr = cfg.qemMaxError or (cellSize * cellSize * 3)
-		verts, tris = decimateQEM(verts, tris, target, maxErr, cfg.qemLengthPenalty or 0.001, cfg.qemMaxValence or 16)
+		verts, tris = decimateQEM(verts, tris, target, maxErr, cfg.qemLengthPenalty or 0.001, cfg.qemMaxValence or 16, cfg.triCap or 20000)
 	end
 	if #tris == 0 then
 		return nil, "No surface after decimation"
