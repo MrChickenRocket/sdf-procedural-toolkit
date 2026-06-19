@@ -198,6 +198,12 @@ the smooth/sharp discriminator) is what makes coarse cells look good, so use the
 
 ## Quickstart
 
+One-click: bake the whole eval set (all six shapes in a row) from the command bar —
+```lua
+require(game.ReplicatedFirst.Examples.EvalSet).run()
+```
+
+Or a single shape directly:
 ```lua
 local M2 = require(game.ReplicatedFirst.SdfMesher2)
 -- a chamfered box with a hole drilled clean through it
