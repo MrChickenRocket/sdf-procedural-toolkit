@@ -33,7 +33,7 @@
 local AssetService = game:GetService("AssetService")
 
 local SdfMesher2 = {}
-SdfMesher2.VERSION = "2026-06-20-v2-stage6b-decim"
+SdfMesher2.VERSION = "2026-06-20-v2-stage6c-quadalloc"
 
 -- ─────────────────────────────────────────────────────────────
 -- Types
@@ -744,6 +744,43 @@ local function quadricOptimal(q: Quadric, fallback: Vector3): (Vector3, number)
 	return Vector3.new(x, y, z), quadricErrorAt(q, x, y, z)
 end
 
+-- Optimal point + cost for the SUM of two quadrics, without allocating the
+-- summed quadric table (the per-edge hot path — avoids ~1 table alloc per edge
+-- evaluation). Same math as quadricAdd + quadricOptimal + quadricErrorAt.
+local function quadricOptimalSum(qa: Quadric, qb: Quadric, fallback: Vector3): (Vector3, number)
+	local a11 = qa[1] + qb[1]
+	local a12 = qa[2] + qb[2]
+	local a13 = qa[3] + qb[3]
+	local a22 = qa[5] + qb[5]
+	local a23 = qa[6] + qb[6]
+	local a33 = qa[8] + qb[8]
+	local q4 = qa[4] + qb[4]
+	local q7 = qa[7] + qb[7]
+	local q9 = qa[9] + qb[9]
+	local q10 = qa[10] + qb[10]
+	local m11 = a22 * a33 - a23 * a23
+	local m12 = a13 * a23 - a12 * a33
+	local m13 = a12 * a23 - a13 * a22
+	local det = a11 * m11 + a12 * m12 + a13 * m13
+	local x, y, z
+	if math.abs(det) < 1e-12 then
+		x, y, z = fallback.X, fallback.Y, fallback.Z
+	else
+		local m22 = a11 * a33 - a13 * a13
+		local m23 = a12 * a13 - a11 * a23
+		local m33 = a11 * a22 - a12 * a12
+		local invDet = 1 / det
+		x = invDet * (m11 * -q4 + m12 * -q7 + m13 * -q9)
+		y = invDet * (m12 * -q4 + m22 * -q7 + m23 * -q9)
+		z = invDet * (m13 * -q4 + m23 * -q7 + m33 * -q9)
+	end
+	local cost = a11 * x * x + 2 * a12 * x * y + 2 * a13 * x * z + 2 * q4 * x
+		+ a22 * y * y + 2 * a23 * y * z + 2 * q7 * y
+		+ a33 * z * z + 2 * q9 * z
+		+ q10
+	return Vector3.new(x, y, z), cost
+end
+
 local function heapPush(heap: { any }, item: any)
 	table.insert(heap, item)
 	local i = #heap
@@ -815,9 +852,13 @@ local function decimateQEM(
 			faceNormal[ti] = n
 			local d = -n:Dot(va)
 			local q = quadricFromPlane(n.X, n.Y, n.Z, d)
-			Q[a] = quadricAdd(Q[a], q)
-			Q[b] = quadricAdd(Q[b], q)
-			Q[c] = quadricAdd(Q[c], q)
+			local qa, qb, qc = Q[a], Q[b], Q[c]
+			for qi = 1, 10 do
+				local qv = q[qi]
+				qa[qi] += qv
+				qb[qi] += qv
+				qc[qi] += qv
+			end
 		else
 			faceNormal[ti] = Vector3.zero
 			triActive[ti] = false
@@ -835,9 +876,8 @@ local function decimateQEM(
 		if a == b then return end
 		if a > b then a, b = b, a end
 		if vertRemoved[a] or vertRemoved[b] then return end
-		local q = quadricAdd(Q[a], Q[b])
 		local fallback = (verts[a] + verts[b]) * 0.5
-		local target, cost = quadricOptimal(q, fallback)
+		local target, cost = quadricOptimalSum(Q[a], Q[b], fallback)
 		local edge = verts[b] - verts[a]
 		cost += lengthPenaltyWeight * edge:Dot(edge)
 		local entry = { cost = cost, target = target, lo = a, hi = b }
@@ -932,7 +972,10 @@ local function decimateQEM(
 			continue
 		end
 		verts[va] = target
-		Q[va] = quadricAdd(Q[va], Q[vb])
+		local qva, qvb = Q[va], Q[vb] -- in-place add (no temp quadric alloc)
+		for qi = 1, 10 do
+			qva[qi] += qvb[qi]
+		end
 		local merged: { number } = {}
 		for _, ti in ipairs(vToTris[va]) do
 			if triActive[ti] then table.insert(merged, ti) end
