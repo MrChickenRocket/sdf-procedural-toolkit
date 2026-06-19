@@ -1,0 +1,9 @@
+{
+  "name": "sdf-procedural-toolkit",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedFirst": {
+      "$path": "src/ReplicatedFirst"
+    }
+  }
+}
