@@ -18,7 +18,7 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-balanced-octree"
+SdfMesher3.VERSION = "2026-06-20-v3-surfaceproject"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
@@ -335,7 +335,18 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 		local imx, imy, imz = mx / cnt, my / cnt, mz / cnt
 		local vx, vy, vz
 		if minDot >= cosFeature then
-			vx, vy, vz = imx, imy, imz
+			-- Smooth cell: project the mass point onto the iso-surface (one Newton
+			-- step). The raw mass point sits inside a convex surface by a chord
+			-- error that grows with cell size, so mixed-resolution curved regions
+			-- (from adaptivity + the balance pass) get differential inset and
+			-- barrel/wave. Projecting onto field=0 removes that — the vertex lands
+			-- on the true surface no matter the cell size.
+			local d, gx, gy, gz = SdfField.fieldGrad(root, imx, imy, imz)
+			if math.abs(d) > size then
+				vx, vy, vz = imx, imy, imz
+			else
+				vx, vy, vz = imx - d * gx, imy - d * gy, imz - d * gz
+			end
 		else
 			a11 += qefBias; a22 += qefBias; a33 += qefBias
 			b1 += qefBias * imx; b2 += qefBias * imy; b3 += qefBias * imz

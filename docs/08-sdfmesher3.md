@@ -148,7 +148,11 @@ through v3.
    waving. Without it, a coarse flat-face cell next to fine crease cells places its dual vertex far
    from theirs → visibly lumpy bevels and corner spikes.
 3. **QEF vertex per surface leaf** — edge crossings + analytic gradients → regularized QEF;
-   normal-cone spread decides sharp-snap vs smooth mass-point.
+   normal-cone spread decides sharp-snap vs smooth mass-point. **Smooth vertices are then
+   projected onto the iso-surface** with one Newton step (`p − field(p)·∇field(p)`). This is
+   essential on an adaptive grid: the raw mass point sits *inside* a convex surface by a chord
+   error that grows with cell size, so mixed-resolution curved regions otherwise barrel and wave;
+   projecting onto `field = 0` lands every vertex on the true surface regardless of cell size.
 4. **Dual Contouring** — `cellProc`/`faceProc`/`edgeProc`/`processEdge` (Ju et al. 2002, verbatim
    tables). Emits one quad per minimal sign-changing edge; leaves are reused as the recursion
    descends past them, so different leaf sizes stitch crack-free.
