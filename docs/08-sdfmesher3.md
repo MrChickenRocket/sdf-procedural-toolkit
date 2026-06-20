@@ -23,7 +23,7 @@ hard-surface, **v3 the default for new work** — fastest, cleanest, same op-gra
 |---|---|---|
 | box | 5050 ms → 28 t | **731 ms → 12 t** |
 | cylinder | 5905 ms → 266 t | **775 ms → 138 t** |
-| soldier (6 parts) | ~2.8–3.9 s, 8k–28k t | **3.4 s, 1980 t** |
+| soldier (6 parts) | ~2.8–3.9 s, 8k–28k t | **~5 s, 2090 t** (3.4 s with `balance=false`) |
 
 v2's floor is decimation, which scales with the **raw** triangle count set by cell size. v3 never
 generates those raw triangles in the first place: the octree puts ~10× fewer cells on the surface,
@@ -77,6 +77,10 @@ sample). v3 calls `SdfField.prepare(root, margin)` once before meshing.
     detailTol = 0.08,    -- THE quality/speed knob: subdivide while the field bends from flat by
                          -- more than detailTol*cellSize. Lower = finer & slower; higher = coarser
                          -- & faster. 0.08 is a good default; 0.04 high-detail, 0.14 fast/low-poly.
+    balance = true,      -- 2:1-balance the octree. Keeps hard 45° chamfer creases clean (without
+                         -- it they go wavy / spike). Smooth shapes barely trigger it; bevelled
+                         -- ones do, at a moderate speed cost. Turn off for max speed on smooth-only
+                         -- content.
     cullMargin = n?,     -- AABB-cull margin; raise if a big smoothUnion blend gets clipped
 
     -- features / shading (same meaning as v2)
@@ -138,6 +142,11 @@ through v3.
    or near-surface and bigger than `maxLeaf`, or near-surface and the **detail test** fails
    (`|field(centre) − mean(corner values)| > detailTol·size`). Sharp creases and curves spike the
    detail metric → refine; flat faces don't → stay coarse.
+2b. **2:1 balance** — subdivide any leaf with a face-neighbour more than one level finer (located
+   by point-descent from the root, ≤6 samples per leaf per pass, iterated to a fixed point). This
+   grades cell-size transitions so a hard chamfer's crease vertices stay collinear instead of
+   waving. Without it, a coarse flat-face cell next to fine crease cells places its dual vertex far
+   from theirs → visibly lumpy bevels and corner spikes.
 3. **QEF vertex per surface leaf** — edge crossings + analytic gradients → regularized QEF;
    normal-cone spread decides sharp-snap vs smooth mass-point.
 4. **Dual Contouring** — `cellProc`/`faceProc`/`edgeProc`/`processEdge` (Ju et al. 2002, verbatim
@@ -152,6 +161,11 @@ through v3.
 - **Redundant corner sampling.** Adjacent octree cells and parent/child levels re-evaluate shared
   corners. A position-keyed sample cache would cut the `octree` phase further on dense graphs —
   the biggest remaining single win.
+- **2:1 balance is the speed cost.** Hard 45° chamfer creases run diagonally across the
+  axis-aligned octree, so without balancing they go wavy. The balance pass fixes that but roughly
+  doubles the octree phase on feature-rich models (the soldier: 3.4 s → ~5 s). Smooth shapes barely
+  trigger it. It also over-fires on smooth *curvature* gradients (which don't actually need it) —
+  gating it to true sharp features (normal-cone) would recover most of the cost.
 - **Sharp creases over-refine.** The field-nonlinearity detail test spikes at SDF kinks even
   though one QEF vertex represents them — so sharp features generate extra leaves that QEM then
   collapses. Harmless to output, but wasted work; a normal-cone gate could suppress it.

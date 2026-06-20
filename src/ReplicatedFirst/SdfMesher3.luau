@@ -18,12 +18,13 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-adaptive-octree-dc"
+SdfMesher3.VERSION = "2026-06-20-v3-balanced-octree"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
 	maxLeaf: number?, -- coarsest surface cell (default minLeaf * 8)
-	detailTol: number?, -- subdivide while the field bends from flat by > detailTol*cellSize (default 0.04; lower = finer)
+	detailTol: number?, -- subdivide while the field bends from flat by > detailTol*cellSize (default 0.08; lower = finer)
+	balance: boolean?, -- 2:1-balance the octree so sharp creases stay clean (default true)
 	featureAngle: number?, -- QEF sharp-snap threshold (deg, default 25)
 	qefBias: number?, -- QEF mass-point regularisation (default 0.05)
 	boundsPadding: number?,
@@ -193,6 +194,100 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 	end
 
 	local rootCell = buildCell(ox, oy, oz, rootSize, sampleCorners(ox, oy, oz, rootSize))
+
+	-- ── 2:1 balance ──
+	-- Restrict the octree so no leaf has a face-neighbour more than one level
+	-- finer. Without this, a coarse flat-face cell sitting next to fine crease
+	-- cells places its dual vertex far from theirs → wavy creases / corner
+	-- spikes on hard chamfers. Balancing grades the transition (clean creases)
+	-- while leaving flat interiors coarse (still fast). Smooth shapes rarely
+	-- trigger it; sharp/bevelled ones do.
+	if cfg.balance ~= false then
+		local function cmaskOf(corner: { number }): number
+			local m = 0
+			for i = 1, 8 do
+				if corner[i] < 0 then m += bit32.lshift(1, i - 1) end
+			end
+			return m
+		end
+		local function splitLeaf(cell: Cell)
+			local h = cell.size * 0.5
+			local children = table.create(8)
+			for i = 1, 8 do
+				local o = CORNER[i]
+				local cxn, cyn, czn = cell.x + o[1] * h, cell.y + o[2] * h, cell.z + o[3] * h
+				local cc = sampleCorners(cxn, cyn, czn, h)
+				children[i] = { x = cxn, y = cyn, z = czn, size = h, leaf = true, corner = cc, corners = cmaskOf(cc) }
+				leafCount += 1
+			end
+			cell.leaf = false
+			cell.children = children
+			leafCount -= 1
+			internalCount += 1
+		end
+		local function findLeaf(px: number, py: number, pz: number): Cell
+			local node = rootCell
+			while not node.leaf do
+				local h = node.size * 0.5
+				local cx = if px >= node.x + h then 1 else 0
+				local cy = if py >= node.y + h then 1 else 0
+				local cz = if pz >= node.z + h then 1 else 0
+				node = (node.children :: { Cell })[1 + 4 * cx + 2 * cy + cz]
+			end
+			return node
+		end
+		local function collect(node: Cell, out: { Cell })
+			if node.leaf then
+				table.insert(out, node)
+			else
+				for _, c in ipairs(node.children :: { Cell }) do
+					collect(c, out)
+				end
+			end
+		end
+		local rx1, ry1, rz1 = ox + rootSize, oy + rootSize, oz + rootSize
+		local eps = minLeaf * 0.25
+		for _ = 1, 12 do
+			local leaves: { Cell } = {}
+			collect(rootCell, leaves)
+			local toSplit: { Cell } = {}
+			for _, lf in ipairs(leaves) do
+				if lf.size > minLeaf * 1.5 then
+					local s = lf.size
+					local s2 = s * 0.5
+					-- one sample per face (centre). A 4:1 neighbour is ¼ the
+					-- face, so the centre lands in it; iteration cleans up the
+					-- rest. Cheap: ≤6 point-locations per leaf per pass.
+					local pts = {
+						{ lf.x - eps, lf.y + s2, lf.z + s2 },
+						{ lf.x + s + eps, lf.y + s2, lf.z + s2 },
+						{ lf.x + s2, lf.y - eps, lf.z + s2 },
+						{ lf.x + s2, lf.y + s + eps, lf.z + s2 },
+						{ lf.x + s2, lf.y + s2, lf.z - eps },
+						{ lf.x + s2, lf.y + s2, lf.z + s + eps },
+					}
+					local finer = false
+					for _, p in ipairs(pts) do
+						if p[1] > ox and p[1] < rx1 and p[2] > oy and p[2] < ry1 and p[3] > oz and p[3] < rz1 then
+							if findLeaf(p[1], p[2], p[3]).size < s * 0.5 - 1e-6 then
+								finer = true
+								break
+							end
+						end
+					end
+					if finer then
+						table.insert(toSplit, lf)
+					end
+				end
+			end
+			if #toSplit == 0 then
+				break
+			end
+			for _, lf in ipairs(toSplit) do
+				splitLeaf(lf)
+			end
+		end
+	end
 	local tSample1 = os.clock()
 
 	-- ── Per-leaf QEF vertex ──
