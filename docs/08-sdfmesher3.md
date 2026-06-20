@@ -156,7 +156,13 @@ through v3.
 4. **Dual Contouring** — `cellProc`/`faceProc`/`edgeProc`/`processEdge` (Ju et al. 2002, verbatim
    tables). Emits one quad per minimal sign-changing edge; leaves are reused as the recursion
    descends past them, so different leaf sizes stitch crack-free.
-5. **QEM** (`SdfDecimate`) → minimal geometry. 6. **Analytic normals** (face-split at hard edges) → bake.
+5. **QEM** (`SdfDecimate`) → minimal geometry.
+6. **Reproject + relax** — snap every vertex back onto `field = 0` (QEM placed them at
+   quadric-optimal points, off a curved surface), then a couple of **tangential relaxation**
+   passes (move smooth vertices toward their neighbour centroid + reproject) to even out Dual
+   Contouring's uneven spacing. Sharp vertices (incident faces diverge past `sharpRelaxAngle`) are
+   pinned, so creases survive. (`reproject` / `relaxIters` config; both default on.)
+7. **Analytic normals** (face-split at hard edges) → bake.
 
 ---
 

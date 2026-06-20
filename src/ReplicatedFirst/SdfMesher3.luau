@@ -18,13 +18,16 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-surfaceproject"
+SdfMesher3.VERSION = "2026-06-20-v3-relax"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
 	maxLeaf: number?, -- coarsest surface cell (default minLeaf * 8)
 	detailTol: number?, -- subdivide while the field bends from flat by > detailTol*cellSize (default 0.08; lower = finer)
 	balance: boolean?, -- 2:1-balance the octree so sharp creases stay clean (default true)
+	reproject: boolean?, -- snap final vertices back onto the iso-surface after QEM (default true)
+	relaxIters: number?, -- tangential relaxation passes for even tessellation (default 2; 0 = off)
+	sharpRelaxAngle: number?, -- pin a vertex from relaxation if its faces diverge past this (deg, default 30)
 	featureAngle: number?, -- QEF sharp-snap threshold (deg, default 25)
 	qefBias: number?, -- QEF mass-point regularisation (default 0.05)
 	boundsPadding: number?,
@@ -524,6 +527,92 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 		local maxErr = cfg.qemMaxError or (minLeaf * minLeaf * 3)
 		local cap = cfg.triCap or 40000
 		verts, tris = SdfDecimate.decimateQEM(verts, tris, 1.0, maxErr, 0.0, 14, cap)
+
+		-- Reproject onto the iso-surface. QEM places each collapsed vertex at the
+		-- quadric-optimal point — the intersection of its incident planes — which
+		-- on a curved surface lies *off* it, re-introducing the chord inset that
+		-- barrels/waves curves. One Newton step snaps every vertex back onto
+		-- field = 0. Sharp-feature vertices already sit at field ≈ 0 (they're on
+		-- the surface), so this barely moves them; the clamp skips any outlier.
+		if cfg.reproject ~= false then
+			local clamp = maxLeaf
+			for i = 1, #verts do
+				local v = verts[i]
+				local d, gx, gy, gz = SdfField.fieldGrad(root, v.X, v.Y, v.Z)
+				if d > -clamp and d < clamp then
+					verts[i] = Vector3.new(v.X - d * gx, v.Y - d * gy, v.Z - d * gz)
+				end
+			end
+		end
+
+		-- Tangential relaxation. Dual Contouring's vertex spacing is uneven, which
+		-- reads as a "wave" / questionable triangulation on smooth surfaces. Nudge
+		-- each smooth vertex toward its neighbours' centroid (regularises spacing,
+		-- damps the wave) and reproject onto field=0 so it stays exactly on the
+		-- surface. SHARP vertices (incident faces diverge past sharpRelaxAngle) are
+		-- pinned so box edges / chamfer creases / hard rims survive untouched.
+		local relaxIters = cfg.relaxIters or 2
+		if relaxIters > 0 and #verts > 0 then
+			local nV = #verts
+			local nT = #tris // 3
+			local adj: { { [number]: boolean } } = table.create(nV)
+			for i = 1, nV do
+				adj[i] = {}
+			end
+			local refN: { Vector3 } = table.create(nV)
+			local sharp = table.create(nV, false)
+			local cosRelax = math.cos(math.rad(cfg.sharpRelaxAngle or 30))
+			for t = 1, nT do
+				local b = (t - 1) * 3
+				local i1, i2, i3 = tris[b + 1], tris[b + 2], tris[b + 3]
+				local p1, p2, p3 = verts[i1], verts[i2], verts[i3]
+				local fn = (p2 - p1):Cross(p3 - p1)
+				local m = fn.Magnitude
+				fn = if m > 1e-9 then fn / m else Vector3.yAxis
+				local tri = { i1, i2, i3 }
+				for _, vi in ipairs(tri) do
+					local rn = refN[vi]
+					if rn == nil then
+						refN[vi] = fn
+					elseif fn:Dot(rn) < cosRelax then
+						sharp[vi] = true
+					end
+				end
+				adj[i1][i2] = true; adj[i1][i3] = true
+				adj[i2][i1] = true; adj[i2][i3] = true
+				adj[i3][i1] = true; adj[i3][i2] = true
+			end
+			local clamp = maxLeaf
+			for _ = 1, relaxIters do
+				local out: { Vector3 } = table.create(nV)
+				for i = 1, nV do
+					if sharp[i] then
+						out[i] = verts[i]
+					else
+						local cx, cy, cz, c = 0, 0, 0, 0
+						for nb in pairs(adj[i]) do
+							local p = verts[nb]
+							cx += p.X; cy += p.Y; cz += p.Z; c += 1
+						end
+						if c == 0 then
+							out[i] = verts[i]
+						else
+							local v = verts[i]
+							local tx = v.X + (cx / c - v.X) * 0.5
+							local ty = v.Y + (cy / c - v.Y) * 0.5
+							local tz = v.Z + (cz / c - v.Z) * 0.5
+							local d, gx, gy, gz = SdfField.fieldGrad(root, tx, ty, tz)
+							if d > -clamp and d < clamp then
+								out[i] = Vector3.new(tx - d * gx, ty - d * gy, tz - d * gz)
+							else
+								out[i] = v
+							end
+						end
+					end
+				end
+				verts = out
+			end
+		end
 	end
 	local tDecim1 = os.clock()
 
