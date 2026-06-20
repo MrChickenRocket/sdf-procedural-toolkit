@@ -77,12 +77,13 @@ sample). v3 calls `SdfField.prepare(root, margin)` once before meshing.
     detailTol = 0.08,    -- THE quality/speed knob: subdivide while the field bends from flat by
                          -- more than detailTol*cellSize. Lower = finer & slower; higher = coarser
                          -- & faster. 0.08 is a good default; 0.04 high-detail, 0.14 fast/low-poly.
-    subdivide = 0,       -- HERO QUALITY: N levels of 1→4 triangle split with every new edge
-                         -- midpoint projected onto the iso-surface. Curved edges bulge to the true
-                         -- surface (smooth curves & silhouettes); flat/crease edges don't move
-                         -- (sharp box/chamfer edges survive). Cheap (~linear in tris) — far faster
-                         -- than an equivalently fine grid. `uniform = true, subdivide = 1` is the
-                         -- recommended hero combo; bump to 2 for max smoothness.
+    subdivide = 0,       -- HERO QUALITY: N levels of ADAPTIVE subdivision. An edge splits only
+                         -- where it's curved (its midpoint, projected onto the surface, leaves the
+                         -- chord by > subdivideCurveTol·len); flat faces and crease edges don't
+                         -- split, so a box stays 12 tris while curves get smooth. Faces re-cut
+                         -- red-green by how many edges split → no T-junction cracks. Cheap (~linear
+                         -- in tris). `uniform = true, subdivide = 2` is the recommended hero combo.
+    subdivideCurveTol = 0.03, -- lower = subdivide gentler curves too (smoother, more tris)
     uniform = false,     -- force uniform minLeaf surface cells. The adaptive octree's mixed cell
                          -- sizes give curved surfaces a faint shading "wave" (uneven vertex
                          -- spacing); uniform cells fix it for genuinely crisp, wave-free curves —
@@ -184,12 +185,12 @@ through v3.
   corners. A position-keyed sample cache would cut the `octree` phase further on dense graphs —
   the biggest remaining single win.
 - **Curved surfaces show a faint shading "wave"** on the bare adaptive grid (uneven vertex spacing
-  from mixed cell sizes). The **hero recipe `uniform = true, subdivide = 1`** removes it cleanly:
-  uniform cells give even spacing, and subdivision+projection pulls the surface smooth — sharp
-  edges survive, and it's cheap (a cylinder: base ~2.5 s, +1 subdiv ~+0.7 s, vs ~145 s for an
+  from mixed cell sizes). The **hero recipe `uniform = true, subdivide = 2`** removes it cleanly:
+  uniform cells give even spacing, and adaptive subdivision+projection pulls curves smooth — sharp
+  edges survive, and it's cheap (a cylinder: base ~2.5 s, +subdiv ~+0.7 s/level, vs ~145 s for an
   equivalently fine grid). For organic content the adaptive default is already smooth and fast.
-  Note `subdivide` refines flat faces too (extra coplanar tris) — harmless for hero stills, but an
-  *adaptive* subdivision (curved edges only) would keep it minimal; that's the open follow-up.
+  `subdivide` only splits curved edges (red-green, crack-free), so flat faces and sharp edges stay
+  minimal — a box stays 12 tris while a sphere densifies.
   Tangential vertex relaxation was also tried (3 variants incl. flip-safe) but reliably dimpled
   curves near rims (reprojection jumps surface sheets), so it's off by default (`relaxIters = 0`,
   config-gated as experimental).

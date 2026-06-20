@@ -119,12 +119,12 @@ function EvalSet.runV3(opts: RunOpts?): Model
 	model:SetAttribute("SdfEvalSetV3", true)
 
 	-- Hero-quality defaults: `uniform` even surface cells (wave-free curves) +
-	-- one `subdivide` level (1→4 split with each new vertex projected onto the
-	-- surface — smooths curves & silhouettes, keeps sharp edges). Both are slow-ish
-	-- but these are single hero primitives. Pass uniform=false / subdivide=0 for
-	-- the fast adaptive look.
+	-- 2 `subdivide` levels (adaptive curved-edge split with each new vertex
+	-- projected onto the surface — smooths curves & silhouettes, leaves flat
+	-- faces and sharp edges untouched). Slow-ish, but these are single hero
+	-- primitives. Pass uniform=false / subdivide=0 for the fast adaptive look.
 	local uniform = (o :: any).uniform ~= false
-	local subdivide = (o :: any).subdivide or 1
+	local subdivide = (o :: any).subdivide or 2
 	local summary = {}
 	for i, s in ipairs(SHAPES) do
 		local res, msg = SdfMesher3.build(s.node, {
