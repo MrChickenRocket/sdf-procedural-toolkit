@@ -73,7 +73,8 @@ Each entry **places a `csg` group** in the world:
 
 ### Transforms & coordinate system
 
-- **`t`** = translation, **`s`** = per-axis **half-extent**, **`r`** = 3×3 rotation as 9 numbers.
+- **`t`** = translation, **`s`** = per-axis **full size** (cube edge / cylinder diameter & height —
+  so our half-extent `semi = s/2`), **`r`** = 3×3 rotation as 9 numbers.
 - **`r` is row-major and uses the row-vector convention** — the three **rows** are the world
   directions of the primitive's local X/Y/Z axes. (Determined empirically: column-as-axis stands
   asymmetric parts on end.)
@@ -86,9 +87,9 @@ Each entry **places a `csg` group** in the world:
 
 | .mcsg | → op-graph node |
 |---|---|
-| `cube` | `box` (cframe from `r`+`t`, `semi = s`; `bevel%`/`round%` × min half-extent) |
-| `cylinder` | `cylinder` (axis = local **Z**; `radius = s.x`, `height = 2·s.z`) |
-| `sphere` | `ellipsoid` (`semi = s`) |
+| `cube` | `box` (cframe from `r`+`t`, `semi = s/2`; `bevel%`/`round%` × min half-extent) |
+| `cylinder` | `cylinder` (axis = local **Z**; `radius = s.x/2`, `height = s.z`) |
+| `sphere` | `ellipsoid` (`semi = s/2`) |
 | add prims | left-fold `smoothUnion` with each prim's `blend` |
 | `mode:"sub"` | `subtract` (hard) of those prims from the add result |
 

@@ -158,7 +158,10 @@ local function primToNode(p: any, base: CFrame, scale: number): any?
 	local xa, ya, za = axes(p.r)
 	local t = vec(p.t) * scale
 	local cf = base * CFrame.fromMatrix(t, xa, ya, za)
-	local semi = s * scale
+	-- `s` is the FULL per-axis size (cube edge / cylinder diameter & height), so
+	-- semi (our half-extent) = s/2. (Determined from the car: wheel diameter ≈
+	-- wheelbase otherwise — the tyres were 2× too big and overlapped.)
+	local semi = s * (scale * 0.5)
 	if ty == "sphere" then
 		return { shape = "ellipsoid", center = cf.Position, semi = semi }
 	elseif ty == "cube" then
