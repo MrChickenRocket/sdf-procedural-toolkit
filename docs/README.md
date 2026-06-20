@@ -79,6 +79,8 @@ Plus:
   (crisp boxes/chamfers, nested CSG, QEM minimal geometry) + the `SdfDocument` multi-part layer.
 - [`08-sdfmesher3.md`](08-sdfmesher3.md) — **SdfMesher3**, the third-gen *adaptive octree* mesher
   (same op-graph as v2, ~7× faster, clean minimal geometry directly — great for plastic-toy content).
+- [`09-magicacsg.md`](09-magicacsg.md) — **SdfMcsg**, importing [MagicaCSG](https://ephtracy.github.io/)
+  `.mcsg` text models into v3 op-graphs (the format reverse-engineered + what's supported).
 
 > **Three meshers, shared field.** `SdfMesher` (docs `01`) is the original Surface-Nets engine —
 > smooth, ships the generators. `SdfMesher2` (doc `07`) adds sharp features + QEM on a uniform grid.

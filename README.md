@@ -29,7 +29,8 @@ sdf-procedural-toolkit/
 │   ├── 05-cookbook.md         ← complete worked generators (incl. the cloud)
 │   ├── 06-gotchas.md          ← the consolidated "this bit me" reference
 │   ├── 07-sdfmesher2.md       ← the v2 sharp-feature mesher + the document layer
-│   └── 08-sdfmesher3.md       ← the v3 adaptive octree mesher (fastest + cleanest)
+│   ├── 08-sdfmesher3.md       ← the v3 adaptive octree mesher (fastest + cleanest)
+│   └── 09-magicacsg.md        ← importing MagicaCSG (.mcsg) text models
 └── src/
     └── ReplicatedFirst/
         ├── SdfMesher.luau                    ← v1 engine: Surface Nets, smooth (heart of it all)
@@ -37,6 +38,7 @@ sdf-procedural-toolkit/
         ├── SdfMesher3.luau                   ← v3 engine: adaptive octree Dual Contouring (docs/08)
         ├── SdfField.luau                     ← shared field: distance, gradient, AABB cull (v2/v3)
         ├── SdfDecimate.luau                  ← shared QEM edge-collapse decimator (v2/v3)
+        ├── SdfMcsg.luau                      ← MagicaCSG (.mcsg) text-model importer → op-graphs (docs/09)
         ├── SdfDocument.luau                  ← multi-part authoring: document → Model of MeshParts
         ├── Documents/
         │   └── Soldier.luau                  ← worked multi-part example (Lego soldier)

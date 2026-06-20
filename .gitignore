@@ -10,3 +10,6 @@
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Third-party MagicaCSG demo models wrapped for local testing (not ours to redistribute)
+src/ReplicatedFirst/McsgModels/
