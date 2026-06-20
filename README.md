@@ -70,17 +70,23 @@ rojo serve        # then connect from the Roblox Studio Rojo plugin
 `default.project.json` maps `src/ReplicatedFirst` → `ReplicatedFirst` in the DataModel, with
 subfolders becoming `Folder` instances and `.luau` files becoming `ModuleScript`s.
 
-### Option B — manual paste
+### Option B — manual paste or ScriptSync
 
-Recreate the tree under `ReplicatedFirst` in Studio:
-- `ReplicatedFirst/SdfMesher` (ModuleScript)
-- `ReplicatedFirst/ProceduralModelKicker` (ModuleScript)
-- `ReplicatedFirst/ReplicatedAttributeRebake` (ModuleScript)
-- `ReplicatedFirst/WorldAnimation/GeneratorSignal` (ModuleScript)
-- `ReplicatedFirst/WorldAnimation/Generators/GeneratorUtil` (ModuleScript)
-- `ReplicatedFirst/WorldAnimation/Generators/FluffyCloud` (ModuleScript)
+If you use **ScriptSync**, just point your Studio `ReplicatedFirst` at this repo's
+`src/ReplicatedFirst` folder and let it sync — done.
 
-`WorldAnimation` and `Generators` are plain `Folder`s.
+Otherwise recreate the tree under `ReplicatedFirst` in Studio (`.luau` files = `ModuleScript`s,
+the rest are plain `Folder`s):
+- `ReplicatedFirst/SdfMesher` — v1 mesher
+- `ReplicatedFirst/SdfMesher2` — v2 sharp-feature mesher
+- `ReplicatedFirst/SdfDocument` — multi-part document layer
+- `ReplicatedFirst/Documents/Soldier` — worked example
+- `ReplicatedFirst/Examples/EvalSet` — one-click eval-set bake
+- `ReplicatedFirst/ProceduralModelKicker`
+- `ReplicatedFirst/ReplicatedAttributeRebake`
+- `ReplicatedFirst/WorldAnimation/GeneratorSignal`
+- `ReplicatedFirst/WorldAnimation/Generators/GeneratorUtil`
+- `ReplicatedFirst/WorldAnimation/Generators/FluffyCloud`
 
 ### What you actually need
 
