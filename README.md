@@ -150,7 +150,7 @@ crystals, skinned branches, and snow.
   (`CreateDataModelContentAsync` → `CreateMeshPartAsync`) strips bone data during cook.
   `SdfMesher.build` uses the two-step path. For static geometry that's ideal (best fidelity);
   for skinned meshes that must deform, route the bake single-step. See `docs/02` and `docs/06`.
-- No license file is included — add your own before distributing if that matters to you.
+- Licensed **MIT** (see [`LICENSE`](LICENSE)) — use it however you like, just keep the notice.
 
 ---
 
