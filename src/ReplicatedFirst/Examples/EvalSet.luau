@@ -118,10 +118,15 @@ function EvalSet.runV3(opts: RunOpts?): Model
 	model.Name = "SdfEvalSetV3"
 	model:SetAttribute("SdfEvalSetV3", true)
 
+	-- `uniform` (default true) forces wave-free crisp curves on these hero
+	-- primitives — slower, but they're single shapes. Pass uniform=false for the
+	-- fast adaptive look.
+	local uniform = (o :: any).uniform ~= false
 	local summary = {}
 	for i, s in ipairs(SHAPES) do
 		local res, msg = SdfMesher3.build(s.node, {
 			detailTol = detailTol,
+			uniform = uniform,
 			vertexColorFn = makeShader(s.color, sun),
 			renderFidelity = Enum.RenderFidelity.Precise,
 			collisionFidelity = Enum.CollisionFidelity.Box,

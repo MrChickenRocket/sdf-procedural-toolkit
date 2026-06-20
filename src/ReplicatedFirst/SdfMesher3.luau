@@ -18,11 +18,12 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-relax"
+SdfMesher3.VERSION = "2026-06-20-v3-uniform-crisp"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
 	maxLeaf: number?, -- coarsest surface cell (default minLeaf * 8)
+	uniform: boolean?, -- force uniform minLeaf surface cells: crisp wave-free curves, slower
 	detailTol: number?, -- subdivide while the field bends from flat by > detailTol*cellSize (default 0.08; lower = finer)
 	balance: boolean?, -- 2:1-balance the octree so sharp creases stay clean (default true)
 	reproject: boolean?, -- snap final vertices back onto the iso-surface after QEM (default true)
@@ -118,7 +119,10 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 	local ox, oy, oz = cx - rootSize * 0.5, cy - rootSize * 0.5, cz - rootSize * 0.5
 
 	local minLeaf = cfg.minLeaf or (maxDim / 64)
-	local maxLeaf = cfg.maxLeaf or (minLeaf * 8)
+	-- `uniform` forces every surface cell to minLeaf (even vertex spacing → crisp,
+	-- wave-free curves, at the cost of v3's adaptive speed). Otherwise surface
+	-- cells coarsen up to maxLeaf away from detail.
+	local maxLeaf = cfg.maxLeaf or (minLeaf * (if cfg.uniform then 1 else 8))
 	local detailTol = cfg.detailTol or 0.08
 	local cosFeature = math.cos(math.rad(cfg.featureAngle or 25))
 	local qefBias = cfg.qefBias or 0.05
@@ -545,23 +549,30 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 			end
 		end
 
-		-- Tangential relaxation. Dual Contouring's vertex spacing is uneven, which
-		-- reads as a "wave" / questionable triangulation on smooth surfaces. Nudge
-		-- each smooth vertex toward its neighbours' centroid (regularises spacing,
-		-- damps the wave) and reproject onto field=0 so it stays exactly on the
-		-- surface. SHARP vertices (incident faces diverge past sharpRelaxAngle) are
-		-- pinned so box edges / chamfer creases / hard rims survive untouched.
-		local relaxIters = cfg.relaxIters or 2
+		-- Tangential relaxation with flip-prevention. Dual Contouring's vertex
+		-- spacing is uneven → smooth surfaces show a "wave" under shading and the
+		-- triangulation looks questionable. Slide each smooth vertex along the
+		-- surface toward its neighbour centroid (tangent-plane move + reproject)
+		-- to even the spacing. Crucially, each proposed move is REJECTED if it
+		-- would flip an incident triangle — that's what dented/holed the earlier
+		-- attempts (folded geometry). Sharp vertices (incident faces diverge past
+		-- sharpRelaxAngle) are pinned so edges/creases survive.
+		local relaxIters = cfg.relaxIters or 0
 		if relaxIters > 0 and #verts > 0 then
 			local nV = #verts
 			local nT = #tris // 3
 			local adj: { { [number]: boolean } } = table.create(nV)
+			local vTris: { { number } } = table.create(nV)
 			for i = 1, nV do
 				adj[i] = {}
+				vTris[i] = {}
 			end
 			local refN: { Vector3 } = table.create(nV)
 			local sharp = table.create(nV, false)
 			local cosRelax = math.cos(math.rad(cfg.sharpRelaxAngle or 30))
+			local fnx = table.create(nT)
+			local fny = table.create(nT)
+			local fnz = table.create(nT)
 			for t = 1, nT do
 				local b = (t - 1) * 3
 				local i1, i2, i3 = tris[b + 1], tris[b + 2], tris[b + 3]
@@ -569,6 +580,7 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 				local fn = (p2 - p1):Cross(p3 - p1)
 				local m = fn.Magnitude
 				fn = if m > 1e-9 then fn / m else Vector3.yAxis
+				fnx[t], fny[t], fnz[t] = fn.X, fn.Y, fn.Z
 				local tri = { i1, i2, i3 }
 				for _, vi in ipairs(tri) do
 					local rn = refN[vi]
@@ -577,6 +589,7 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 					elseif fn:Dot(rn) < cosRelax then
 						sharp[vi] = true
 					end
+					table.insert(vTris[vi], t)
 				end
 				adj[i1][i2] = true; adj[i1][i3] = true
 				adj[i2][i1] = true; adj[i2][i3] = true
@@ -584,33 +597,58 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 			end
 			local clamp = maxLeaf
 			for _ = 1, relaxIters do
-				local out: { Vector3 } = table.create(nV)
 				for i = 1, nV do
-					if sharp[i] then
-						out[i] = verts[i]
-					else
+					if not sharp[i] then
+						local v = verts[i]
 						local cx, cy, cz, c = 0, 0, 0, 0
 						for nb in pairs(adj[i]) do
 							local p = verts[nb]
 							cx += p.X; cy += p.Y; cz += p.Z; c += 1
 						end
-						if c == 0 then
-							out[i] = verts[i]
-						else
-							local v = verts[i]
-							local tx = v.X + (cx / c - v.X) * 0.5
-							local ty = v.Y + (cy / c - v.Y) * 0.5
-							local tz = v.Z + (cz / c - v.Z) * 0.5
-							local d, gx, gy, gz = SdfField.fieldGrad(root, tx, ty, tz)
+						if c > 0 then
+							-- tangent-plane move toward centroid, then reproject
+							local _, gx, gy, gz = SdfField.fieldGrad(root, v.X, v.Y, v.Z)
+							local dx, dy, dz = cx / c - v.X, cy / c - v.Y, cz / c - v.Z
+							local dn = dx * gx + dy * gy + dz * gz
+							dx -= dn * gx; dy -= dn * gy; dz -= dn * gz
+							local tx, ty, tz = v.X + dx * 0.5, v.Y + dy * 0.5, v.Z + dz * 0.5
+							local d, rgx, rgy, rgz = SdfField.fieldGrad(root, tx, ty, tz)
+							local nvx, nvy, nvz
 							if d > -clamp and d < clamp then
-								out[i] = Vector3.new(tx - d * gx, ty - d * gy, tz - d * gz)
+								nvx, nvy, nvz = tx - d * rgx, ty - d * rgy, tz - d * rgz
 							else
-								out[i] = v
+								nvx, nvy, nvz = tx, ty, tz
+							end
+							-- reject if any incident triangle would flip
+							local flip = false
+							for _, t in ipairs(vTris[i]) do
+								local b = (t - 1) * 3
+								local a1, a2, a3 = tris[b + 1], tris[b + 2], tris[b + 3]
+								local q1 = if a1 == i then Vector3.new(nvx, nvy, nvz) else verts[a1]
+								local q2 = if a2 == i then Vector3.new(nvx, nvy, nvz) else verts[a2]
+								local q3 = if a3 == i then Vector3.new(nvx, nvy, nvz) else verts[a3]
+								local nn = (q2 - q1):Cross(q3 - q1)
+								if nn.X * fnx[t] + nn.Y * fny[t] + nn.Z * fnz[t] <= 0 then
+									flip = true
+									break
+								end
+							end
+							if not flip then
+								verts[i] = Vector3.new(nvx, nvy, nvz)
+								for _, t in ipairs(vTris[i]) do
+									local b = (t - 1) * 3
+									local p1, p2, p3 = verts[tris[b + 1]], verts[tris[b + 2]], verts[tris[b + 3]]
+									local fn = (p2 - p1):Cross(p3 - p1)
+									local m = fn.Magnitude
+									if m > 1e-9 then
+										fn /= m
+										fnx[t], fny[t], fnz[t] = fn.X, fn.Y, fn.Z
+									end
+								end
 							end
 						end
 					end
 				end
-				verts = out
 			end
 		end
 	end

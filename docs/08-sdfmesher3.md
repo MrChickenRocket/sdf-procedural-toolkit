@@ -77,6 +77,12 @@ sample). v3 calls `SdfField.prepare(root, margin)` once before meshing.
     detailTol = 0.08,    -- THE quality/speed knob: subdivide while the field bends from flat by
                          -- more than detailTol*cellSize. Lower = finer & slower; higher = coarser
                          -- & faster. 0.08 is a good default; 0.04 high-detail, 0.14 fast/low-poly.
+    uniform = false,     -- force uniform minLeaf surface cells. The adaptive octree's mixed cell
+                         -- sizes give curved surfaces a faint shading "wave" (uneven vertex
+                         -- spacing); uniform cells fix it for genuinely crisp, wave-free curves —
+                         -- at a big speed cost (a cylinder: ~0.3s adaptive → ~4s uniform). Use it
+                         -- for hero/turned primitives; leave it off for organic content and the
+                         -- adaptive speed. `EvalSet.runV3` uses it by default.
     balance = true,      -- 2:1-balance the octree. Keeps hard 45° chamfer creases clean (without
                          -- it they go wavy / spike). Smooth shapes barely trigger it; bevelled
                          -- ones do, at a moderate speed cost. Turn off for max speed on smooth-only
@@ -171,6 +177,14 @@ through v3.
 - **Redundant corner sampling.** Adjacent octree cells and parent/child levels re-evaluate shared
   corners. A position-keyed sample cache would cut the `octree` phase further on dense graphs —
   the biggest remaining single win.
+- **Curved surfaces show a faint shading "wave"** on the adaptive grid. The octree's mixed cell
+  sizes give uneven vertex spacing, so a cylinder's silhouette/shading ripples slightly (worst on
+  large, close, turned shapes). `uniform = true` eliminates it (even spacing) at a big speed cost;
+  it's the right call for hero primitives, not for the soldier. Tangential vertex relaxation was
+  tried as a cheaper fix but reliably dimpled curved surfaces (reprojection misbehaves near rims),
+  so it's off by default (`relaxIters = 0`, kept config-gated as experimental). A robust
+  feature-aware relaxation, or angular refinement around circular rims, is the open path to crisp
+  curves *without* going fully uniform.
 - **2:1 balance is the speed cost.** Hard 45° chamfer creases run diagonally across the
   axis-aligned octree, so without balancing they go wavy. The balance pass fixes that but roughly
   doubles the octree phase on feature-rich models (the soldier: 3.4 s → ~5 s). Smooth shapes barely
