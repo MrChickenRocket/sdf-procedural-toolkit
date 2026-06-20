@@ -91,6 +91,12 @@ sample). v3 calls `SdfField.prepare(root, margin)` once before meshing.
                          -- ≳ minLeaf. Best on flat-faced/hard-edged shapes (boxes): perfect soft
                          -- edges. On precise curves it inflates the surface by r and adds a faint
                          -- wave (grid misalignment), so it's opt-in. Grows the shape by r.
+    decimateAfter = false,-- REMESH: run QEM again AFTER subdivide (needs subdivide > 0). Subdivision
+                         -- +projection first builds dense geometry hugging the true (softened)
+                         -- surface; QEM then simplifies THAT, so the minimal vertices land optimally
+                         -- on the smooth surface (not limited by the coarse base). Smooth shape at
+                         -- minimal tris — the soldier went 13.1k → 3.4k with an identical look. Soft
+                         -- edges survive in shading via the analytic normals. (qemMaxErrorAfter tunes it.)
     uniform = false,     -- force uniform minLeaf surface cells. The adaptive octree's mixed cell
                          -- sizes give curved surfaces a faint shading "wave" (uneven vertex
                          -- spacing); uniform cells fix it for genuinely crisp, wave-free curves —

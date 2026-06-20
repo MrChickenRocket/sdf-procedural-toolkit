@@ -18,7 +18,7 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-edgesoften"
+SdfMesher3.VERSION = "2026-06-20-v3-decimateafter"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
@@ -36,6 +36,8 @@ export type Config = {
 	boundsPadding: number?,
 	cullMargin: number?, -- AABB-cull margin; raise if a large smoothUnion blend gets clipped
 	edgeSoften: number?, -- round EVERY convex edge by this radius (plastic-toy fillet); grows shape by r
+	decimateAfter: boolean?, -- remesh: QEM again after subdivide (smooth shape at minimal tris)
+	qemMaxErrorAfter: number?, -- error for the decimate-after pass (default = qemMaxError)
 	-- decimation (QEM) — turns DC's per-cell quads into minimal geometry
 	decimate: boolean?, -- default true
 	qemMaxError: number?, -- quality knob; default ~ minLeaf^2 * 3 (higher = fewer tris)
@@ -737,6 +739,27 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 			end
 		end
 		tris = newTris
+	end
+
+	-- ── Decimate-after (remesh) ──
+	-- QEM on the SUBDIVIDED mesh, then reproject. Subdivision+projection first
+	-- built dense geometry that accurately hugs the (softened) surface; QEM now
+	-- simplifies THAT, so the minimal vertices land optimally on the smooth
+	-- surface instead of being limited by the coarse base. Soft edges survive in
+	-- shading via the analytic normals even as the fillet geometry coarsens.
+	if cfg.decimateAfter and subdiv > 0 then
+		local maxErr = cfg.qemMaxErrorAfter or cfg.qemMaxError or (minLeaf * minLeaf * 3)
+		local cap = cfg.triCap or 40000
+		verts, tris = SdfDecimate.decimateQEM(verts, tris, 1.0, maxErr, 0.0, 14, cap)
+		local clamp = maxLeaf
+		for i = 1, #verts do
+			local v = verts[i]
+			local d, gx, gy, gz = SdfField.fieldGrad(root, v.X, v.Y, v.Z)
+			d -= soften
+			if d > -clamp and d < clamp then
+				verts[i] = Vector3.new(v.X - d * gx, v.Y - d * gy, v.Z - d * gz)
+			end
+		end
 	end
 
 	-- ── Normals (analytic, split at hard edges) + bake ──
