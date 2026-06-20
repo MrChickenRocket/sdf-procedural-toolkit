@@ -28,11 +28,15 @@ sdf-procedural-toolkit/
 │   ├── 04-vertex-shading.md
 │   ├── 05-cookbook.md         ← complete worked generators (incl. the cloud)
 │   ├── 06-gotchas.md          ← the consolidated "this bit me" reference
-│   └── 07-sdfmesher2.md       ← the v2 sharp-feature mesher + the document layer
+│   ├── 07-sdfmesher2.md       ← the v2 sharp-feature mesher + the document layer
+│   └── 08-sdfmesher3.md       ← the v3 adaptive octree mesher (fastest + cleanest)
 └── src/
     └── ReplicatedFirst/
         ├── SdfMesher.luau                    ← v1 engine: Surface Nets, smooth (heart of it all)
-        ├── SdfMesher2.luau                   ← v2 engine: sharp features + QEM minimal geometry (docs/07)
+        ├── SdfMesher2.luau                   ← v2 engine: uniform grid, sharp features + QEM (docs/07)
+        ├── SdfMesher3.luau                   ← v3 engine: adaptive octree Dual Contouring (docs/08)
+        ├── SdfField.luau                     ← shared field: distance, gradient, AABB cull (v2/v3)
+        ├── SdfDecimate.luau                  ← shared QEM edge-collapse decimator (v2/v3)
         ├── SdfDocument.luau                  ← multi-part authoring: document → Model of MeshParts
         ├── Documents/
         │   └── Soldier.luau                  ← worked multi-part example (Lego soldier)
@@ -45,10 +49,14 @@ sdf-procedural-toolkit/
                 └── FluffyCloud.luau          ← runnable example generator
 ```
 
-> **Two meshers.** `SdfMesher` (v1, docs `01`) is the original Surface-Nets engine — smooth,
-> ships the generators. `SdfMesher2` (v2, docs `07`) is newer and aimed at **hard-surface /
-> mechanical / CSG** content: crisp boxes & chamfers, nested boolean ops, and aggressive QEM
-> decimation to minimal triangle counts. Organic/foliage → v1; boxes/machined → v2.
+> **Three meshers, shared field.** `SdfMesher` (v1, docs `01`) is the original Surface-Nets engine
+> — smooth, ships the generators. `SdfMesher2` (v2, docs `07`) adds **sharp features + QEM** on a
+> uniform grid: crisp boxes & chamfers, nested CSG, minimal triangle counts. `SdfMesher3` (v3, docs
+> `08`) is the **adaptive octree** engine — same op-graph as v2 but it refines only where the
+> surface bends, so it's ~7× faster and produces clean minimal geometry directly (great for smooth
+> "plastic-toy" content). v2 and v3 share the field evaluator (`SdfField`) and decimator
+> (`SdfDecimate`). Organic/foliage → v1; **new work → v3** (fall back to v2's fixed grid if you need
+> a guaranteed uniform resolution).
 
 The modules are copied **verbatim** from a shipping project — known-working, heavily commented.
 
@@ -79,6 +87,9 @@ Otherwise recreate the tree under `ReplicatedFirst` in Studio (`.luau` files = `
 the rest are plain `Folder`s):
 - `ReplicatedFirst/SdfMesher` — v1 mesher
 - `ReplicatedFirst/SdfMesher2` — v2 sharp-feature mesher
+- `ReplicatedFirst/SdfMesher3` — v3 adaptive octree mesher
+- `ReplicatedFirst/SdfField` — shared field evaluator (v2/v3)
+- `ReplicatedFirst/SdfDecimate` — shared QEM decimator (v2/v3)
 - `ReplicatedFirst/SdfDocument` — multi-part document layer
 - `ReplicatedFirst/Documents/Soldier` — worked example
 - `ReplicatedFirst/Examples/EvalSet` — one-click eval-set bake

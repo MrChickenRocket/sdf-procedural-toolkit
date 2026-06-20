@@ -77,14 +77,18 @@ Plus:
 - [`06-gotchas.md`](06-gotchas.md) — the consolidated "this bit me" reference table. Skim it before debugging.
 - [`07-sdfmesher2.md`](07-sdfmesher2.md) — **SdfMesher2**, the second-gen *sharp-feature* mesher
   (crisp boxes/chamfers, nested CSG, QEM minimal geometry) + the `SdfDocument` multi-part layer.
+- [`08-sdfmesher3.md`](08-sdfmesher3.md) — **SdfMesher3**, the third-gen *adaptive octree* mesher
+  (same op-graph as v2, ~7× faster, clean minimal geometry directly — great for plastic-toy content).
 
-> **Two meshers.** `SdfMesher` (docs `01`) is the original Surface-Nets engine — smooth, ships the
-> generators. `SdfMesher2` (doc `07`) is newer and aimed at hard-surface/mechanical content (sharp
-> edges, low poly). Pick by content: organic/foliage → v1; boxes/machined/CSG → v2.
+> **Three meshers, shared field.** `SdfMesher` (docs `01`) is the original Surface-Nets engine —
+> smooth, ships the generators. `SdfMesher2` (doc `07`) adds sharp features + QEM on a uniform grid.
+> `SdfMesher3` (doc `08`) is the adaptive-octree successor: same input as v2, faster, cleaner.
+> v2/v3 share `SdfField` (eval) and `SdfDecimate` (QEM). Pick: organic/foliage → v1; new
+> hard-surface/CSG/toys → **v3** (v2 if you need a guaranteed uniform resolution).
 
 **Recommended reading order for a first build:** this README → `05-cookbook.md` (copy the
 cloud, run it) → `01` and `02` when you need to understand or extend it → `03`/`04`/`06` as
-reference. For hard-surface work, read `07`.
+reference. For hard-surface work, read `07` then `08`.
 
 ---
 
@@ -96,16 +100,20 @@ them across; everything else (the generators) is application content built on to
 | Module | Role | Required? |
 |---|---|---|
 | `ReplicatedFirst/SdfMesher.luau` | The v1 mesher (Surface Nets, smooth) — steps 2–6. | **Yes** (v1 path) |
-| `ReplicatedFirst/SdfMesher2.luau` | The v2 mesher (sharp features + QEM minimal geometry). Self-contained; only `AssetService`. See `07`. | For hard-surface/CSG |
-| `ReplicatedFirst/SdfDocument.luau` | Multi-part authoring layer: a document → a `Model` of MeshParts. `bake` (v1) / `bakeV2` (v2). | Optional |
-| `ReplicatedFirst/Documents/Soldier.luau` | Worked multi-part example (the Lego soldier), bakes through either mesher. | Example |
+| `ReplicatedFirst/SdfMesher2.luau` | The v2 mesher (uniform grid, sharp features + QEM). Self-contained; only `AssetService`. See `07`. | For uniform-grid hard-surface |
+| `ReplicatedFirst/SdfMesher3.luau` | The v3 mesher (adaptive octree DC, fastest + cleanest). Needs `SdfField` + `SdfDecimate`. See `08`. | **For new work** |
+| `ReplicatedFirst/SdfField.luau` | Shared field evaluator: distance, analytic gradient, AABB cull boxes. | Yes for v3 |
+| `ReplicatedFirst/SdfDecimate.luau` | Shared Garland-Heckbert QEM edge-collapse decimator. | Yes for v3 |
+| `ReplicatedFirst/SdfDocument.luau` | Multi-part authoring layer: a document → a `Model` of MeshParts. `bake` (v1) / `bakeV2` (v2) / `bakeV3` (v3). | Optional |
+| `ReplicatedFirst/Documents/Soldier.luau` | Worked multi-part example (the Lego soldier), bakes through any mesher. | Example |
 | `ReplicatedFirst/WorldAnimation/GeneratorSignal.luau` | `wrap()` for generators: re-entrancy guard, server bail, done-signal. | Yes for ProceduralModels |
 | `ReplicatedFirst/ProceduralModelKicker.luau` | Throttles concurrent bakes under the EditableMesh cap; layer ordering. | Yes if you have >~4 PMs |
 | `ReplicatedFirst/ReplicatedAttributeRebake.luau` | Client-side re-bake when the server changes a replicated attribute. | Only for server-driven attrs |
 | `ReplicatedFirst/WorldAnimation/Generators/GeneratorUtil.luau` | Snow/leaf helpers, palette resolution, mesh mounting. | Optional convenience |
 
-Both `SdfMesher` and `SdfMesher2` depend only on `AssetService` (v1 also uses the native `vector`
-library) — each is fully self-contained.
+`SdfMesher` and `SdfMesher2` depend only on `AssetService` (v1 also uses the native `vector`
+library) — each is fully self-contained. `SdfMesher3` is the same except it requires the two shared
+modules `SdfField` (field eval) and `SdfDecimate` (QEM) as siblings — copy all three together.
 
 ---
 

@@ -7,7 +7,8 @@
 -- build() also prints a per-phase timing line per shape (see docs/07).
 --
 -- Run from the Studio command bar (Edit mode):
---   require(game.ReplicatedFirst.Examples.EvalSet).run()
+--   require(game.ReplicatedFirst.Examples.EvalSet).run()     -- v2 (uniform grid)
+--   require(game.ReplicatedFirst.Examples.EvalSet).runV3()   -- v3 (adaptive octree; faster)
 --
 -- Options (all optional):
 --   require(game.ReplicatedFirst.Examples.EvalSet).run({
@@ -19,6 +20,7 @@
 -- Re-running clears the previous set (it's tagged with the "SdfEvalSet" attribute).
 
 local SdfMesher2 = require(script.Parent.Parent.SdfMesher2)
+local SdfMesher3 = require(script.Parent.Parent.SdfMesher3)
 
 local EvalSet = {}
 
@@ -92,6 +94,55 @@ function EvalSet.run(opts: RunOpts?): Model
 
 	model.Parent = parent
 	print("[EvalSet] " .. table.concat(summary, "  "))
+	return model
+end
+
+-- Same six shapes through the v3 adaptive octree mesher. `detailTol` is the
+-- quality/speed dial (lower = finer). Parts get SmoothPlastic + a little
+-- reflectance so the surface reads like a plastic toy.
+function EvalSet.runV3(opts: RunOpts?): Model
+	local o = opts or {}
+	local origin = o.origin or Vector3.new(0, 3.2, 0)
+	local spacing = o.spacing or 10
+	local parent = o.parent or workspace
+	local sun = (o.sun or Vector3.new(0.4, 0.8, 0.45)).Unit
+	local detailTol = (o :: any).detailTol or 0.08
+
+	for _, c in ipairs(parent:GetChildren()) do
+		if c:GetAttribute("SdfEvalSetV3") then
+			c:Destroy()
+		end
+	end
+
+	local model = Instance.new("Model")
+	model.Name = "SdfEvalSetV3"
+	model:SetAttribute("SdfEvalSetV3", true)
+
+	local summary = {}
+	for i, s in ipairs(SHAPES) do
+		local res, msg = SdfMesher3.build(s.node, {
+			detailTol = detailTol,
+			vertexColorFn = makeShader(s.color, sun),
+			renderFidelity = Enum.RenderFidelity.Precise,
+			collisionFidelity = Enum.CollisionFidelity.Box,
+		})
+		if not res then
+			warn(`[EvalSet.runV3] {s.name} failed: {tostring(msg)}`)
+		else
+			local mp = res.meshPart
+			mp.Name = s.name
+			mp.Anchored = true
+			mp.Material = Enum.Material.SmoothPlastic
+			mp.Reflectance = 0.1
+			mp.Color = Color3.new(1, 1, 1)
+			mp.Position = origin + Vector3.new((i - 1) * spacing, 0, 0)
+			mp.Parent = model
+			table.insert(summary, `{s.name}={res.triCount}t`)
+		end
+	end
+
+	model.Parent = parent
+	print("[EvalSet.runV3] " .. table.concat(summary, "  "))
 	return model
 end
 

@@ -20,6 +20,7 @@
 
 local SdfMesher = require(script.Parent.SdfMesher)
 local SdfMesher2 = require(script.Parent.SdfMesher2)
+local SdfMesher3 = require(script.Parent.SdfMesher3)
 
 local SdfDocument = {}
 
@@ -306,6 +307,53 @@ function SdfDocument.bakeV2(doc: Document, opts: BakeOpts?): (Model, { { name: s
 		})
 		if not res then
 			warn(`[SdfDocument.bakeV2] group '{g.name}' failed: {tostring(msg)}`)
+		else
+			local mp = res.meshPart
+			mp.Name = g.name
+			mp.Anchored = true
+			if g.material then
+				mp.Material = g.material
+			end
+			mp.Position = origin
+			mp.Parent = model
+			table.insert(stats, { name = g.name, tris = res.triCount })
+		end
+	end
+	if o.primaryGroup then
+		model.PrimaryPart = model:FindFirstChild(o.primaryGroup) :: BasePart?
+	end
+	if o.parent then
+		model.Parent = o.parent
+	end
+	return model, stats
+end
+
+-- ─────────────────────────────────────────────────────────────
+-- v3 path: same op-graph, baked through the adaptive octree mesher (SdfMesher3).
+-- Fastest + cleanest minimal geometry; ideal for smooth "plastic-toy" content.
+-- Group config maps `g.detailTol` / `g.minLeaf` (else v3 defaults). The legacy
+-- `g.cell` is ignored (v3 is resolution-adaptive, not fixed-grid).
+-- ─────────────────────────────────────────────────────────────
+
+function SdfDocument.bakeV3(doc: Document, opts: BakeOpts?): (Model, { { name: string, tris: number } })
+	local o = opts or {}
+	local origin = o.origin or Vector3.zero
+	local sun = o.sun or doc.sun or Vector3.new(0.5, 0.9, 0.35).Unit
+	local model = Instance.new("Model")
+	model.Name = (doc.name or "SdfDocument") .. "_v3"
+	local stats = {}
+	for _, g in ipairs(doc.groups) do
+		local graph = SdfDocument.toGraph(g)
+		local colorFn = g.colorFn or SdfDocument.makeShader(g.color or Color3.new(0.6, 0.6, 0.6), sun)
+		local res, msg = SdfMesher3.build(graph, {
+			detailTol = g.detailTol,
+			minLeaf = g.minLeaf,
+			vertexColorFn = colorFn,
+			renderFidelity = g.renderFidelity or Enum.RenderFidelity.Precise,
+			collisionFidelity = g.collisionFidelity or Enum.CollisionFidelity.Box,
+		})
+		if not res then
+			warn(`[SdfDocument.bakeV3] group '{g.name}' failed: {tostring(msg)}`)
 		else
 			local mp = res.meshPart
 			mp.Name = g.name
