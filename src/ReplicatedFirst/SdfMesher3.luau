@@ -18,12 +18,13 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-uniform-crisp"
+SdfMesher3.VERSION = "2026-06-20-v3-subdiv-project"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
 	maxLeaf: number?, -- coarsest surface cell (default minLeaf * 8)
 	uniform: boolean?, -- force uniform minLeaf surface cells: crisp wave-free curves, slower
+	subdivide: number?, -- hero quality: N levels of 1→4 subdivision + surface projection (default 0)
 	detailTol: number?, -- subdivide while the field bends from flat by > detailTol*cellSize (default 0.08; lower = finer)
 	balance: boolean?, -- 2:1-balance the octree so sharp creases stay clean (default true)
 	reproject: boolean?, -- snap final vertices back onto the iso-surface after QEM (default true)
@@ -653,6 +654,50 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 		end
 	end
 	local tDecim1 = os.clock()
+
+	-- ── Subdivide + project (hero quality) ──
+	-- Loop-style 1→4 split, with each new edge-midpoint projected onto the
+	-- iso-surface. On a CURVED edge the midpoint bulges out to the true surface
+	-- (the chord becomes an arc → smooth curves & silhouettes); on a flat or
+	-- crease edge field≈0 at the midpoint so it doesn't move (flats stay flat,
+	-- creases stay sharp). Reliable — unlike relaxation it can't fold. Best on a
+	-- uniform base (even spacing in, even + smooth out). Cost is ~linear in tris.
+	local subdiv = cfg.subdivide or 0
+	for _ = 1, subdiv do
+		local nT = #tris // 3
+		local midOf: { [number]: number } = {}
+		local newTris: { number } = table.create(#tris * 4)
+		local function midVert(a: number, b: number): number
+			local lo, hi = a, b
+			if lo > hi then lo, hi = hi, lo end
+			local key = lo * 33554432 + hi
+			local mi = midOf[key]
+			if mi then return mi end
+			local pa, pb = verts[lo], verts[hi]
+			local mx, my, mz = (pa.X + pb.X) * 0.5, (pa.Y + pb.Y) * 0.5, (pa.Z + pb.Z) * 0.5
+			local d, gx, gy, gz = SdfField.fieldGrad(root, mx, my, mz)
+			local lim = (pb - pa).Magnitude * 0.5 -- never project further than half the edge (no sheet jumps)
+			if d > -lim and d < lim then
+				mx, my, mz = mx - d * gx, my - d * gy, mz - d * gz
+			end
+			table.insert(verts, Vector3.new(mx, my, mz))
+			mi = #verts
+			midOf[key] = mi
+			return mi
+		end
+		for t = 1, nT do
+			local b = (t - 1) * 3
+			local a1, a2, a3 = tris[b + 1], tris[b + 2], tris[b + 3]
+			local m12 = midVert(a1, a2)
+			local m23 = midVert(a2, a3)
+			local m31 = midVert(a3, a1)
+			newTris[#newTris + 1] = a1; newTris[#newTris + 1] = m12; newTris[#newTris + 1] = m31
+			newTris[#newTris + 1] = m12; newTris[#newTris + 1] = a2; newTris[#newTris + 1] = m23
+			newTris[#newTris + 1] = m31; newTris[#newTris + 1] = m23; newTris[#newTris + 1] = a3
+			newTris[#newTris + 1] = m12; newTris[#newTris + 1] = m23; newTris[#newTris + 1] = m31
+		end
+		tris = newTris
+	end
 
 	-- ── Normals (analytic, split at hard edges) + bake ──
 	local triCount = #tris / 3

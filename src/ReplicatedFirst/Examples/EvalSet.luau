@@ -118,15 +118,19 @@ function EvalSet.runV3(opts: RunOpts?): Model
 	model.Name = "SdfEvalSetV3"
 	model:SetAttribute("SdfEvalSetV3", true)
 
-	-- `uniform` (default true) forces wave-free crisp curves on these hero
-	-- primitives — slower, but they're single shapes. Pass uniform=false for the
-	-- fast adaptive look.
+	-- Hero-quality defaults: `uniform` even surface cells (wave-free curves) +
+	-- one `subdivide` level (1→4 split with each new vertex projected onto the
+	-- surface — smooths curves & silhouettes, keeps sharp edges). Both are slow-ish
+	-- but these are single hero primitives. Pass uniform=false / subdivide=0 for
+	-- the fast adaptive look.
 	local uniform = (o :: any).uniform ~= false
+	local subdivide = (o :: any).subdivide or 1
 	local summary = {}
 	for i, s in ipairs(SHAPES) do
 		local res, msg = SdfMesher3.build(s.node, {
 			detailTol = detailTol,
 			uniform = uniform,
+			subdivide = subdivide,
 			vertexColorFn = makeShader(s.color, sun),
 			renderFidelity = Enum.RenderFidelity.Precise,
 			collisionFidelity = Enum.CollisionFidelity.Box,
