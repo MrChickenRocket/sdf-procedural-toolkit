@@ -84,6 +84,13 @@ sample). v3 calls `SdfField.prepare(root, margin)` once before meshing.
                          -- red-green by how many edges split → no T-junction cracks. Cheap (~linear
                          -- in tris). `uniform = true, subdivide = 2` is the recommended hero combo.
     subdivideCurveTol = 0.03, -- lower = subdivide gentler curves too (smoother, more tris)
+    edgeSoften = 0,      -- round EVERY convex edge by this radius — the injection-moulded
+                         -- plastic-toy fillet (sharp corners get a tiny soft bevel that catches a
+                         -- highlight). It's the SDF `opRound` (field − r); the gradient is unchanged
+                         -- so the fillet shades smoothly. The fillet only resolves where its radius
+                         -- ≳ minLeaf. Best on flat-faced/hard-edged shapes (boxes): perfect soft
+                         -- edges. On precise curves it inflates the surface by r and adds a faint
+                         -- wave (grid misalignment), so it's opt-in. Grows the shape by r.
     uniform = false,     -- force uniform minLeaf surface cells. The adaptive octree's mixed cell
                          -- sizes give curved surfaces a faint shading "wave" (uneven vertex
                          -- spacing); uniform cells fix it for genuinely crisp, wave-free curves —

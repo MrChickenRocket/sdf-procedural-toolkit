@@ -18,7 +18,7 @@ local SdfField = require(script.Parent.SdfField)
 local SdfDecimate = require(script.Parent.SdfDecimate)
 
 local SdfMesher3 = {}
-SdfMesher3.VERSION = "2026-06-20-v3-adaptive-subdiv"
+SdfMesher3.VERSION = "2026-06-20-v3-edgesoften"
 
 export type Config = {
 	minLeaf: number?, -- finest cell (studs); detail floor (default ~ size/64)
@@ -35,6 +35,7 @@ export type Config = {
 	qefBias: number?, -- QEF mass-point regularisation (default 0.05)
 	boundsPadding: number?,
 	cullMargin: number?, -- AABB-cull margin; raise if a large smoothUnion blend gets clipped
+	edgeSoften: number?, -- round EVERY convex edge by this radius (plastic-toy fillet); grows shape by r
 	-- decimation (QEM) — turns DC's per-cell quads into minimal geometry
 	decimate: boolean?, -- default true
 	qemMaxError: number?, -- quality knob; default ~ minLeaf^2 * 3 (higher = fewer tris)
@@ -92,8 +93,14 @@ type Cell = {
 
 function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 	local cfg = config or {}
+	-- `edgeSoften` = round EVERY convex edge by this radius (the SDF `opRound`:
+	-- evaluate field − r). It's the "injection-moulded plastic" fillet — sharp
+	-- corners get a tiny soft bevel that catches a highlight. The gradient is
+	-- unchanged by the constant offset, so the analytic normals stay correct and
+	-- the fillet shades smoothly even at modest tessellation. Grows the shape by r.
+	local soften = cfg.edgeSoften or 0
 	local field = function(x, y, z)
-		return SdfField.field(root, x, y, z)
+		return SdfField.field(root, x, y, z) - soften
 	end
 	local grad = function(x, y, z)
 		local _, gx, gy, gz = SdfField.fieldGrad(root, x, y, z)
@@ -105,10 +112,11 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 		return nil, "empty"
 	end
 	-- Stamp AABB cull boxes so multi-primitive graphs don't evaluate every leaf
-	-- at every sample. Margin must cover any smoothUnion bulge past the raw boxes.
-	local cullMargin = math.max(cfg.boundsPadding or 1.0, (cfg.cullMargin or 0))
+	-- at every sample. Margin must cover any smoothUnion bulge past the raw boxes
+	-- and the edge-soften inflation.
+	local cullMargin = math.max(cfg.boundsPadding or 1.0, (cfg.cullMargin or 0)) + soften
 	SdfField.prepare(root, cullMargin)
-	local pad = cfg.boundsPadding or 1.0
+	local pad = (cfg.boundsPadding or 1.0) + soften
 	minV = minV - Vector3.one * pad
 	maxV = maxV + Vector3.one * pad
 	local span = maxV - minV
@@ -351,6 +359,7 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 			-- barrel/wave. Projecting onto field=0 removes that — the vertex lands
 			-- on the true surface no matter the cell size.
 			local d, gx, gy, gz = SdfField.fieldGrad(root, imx, imy, imz)
+			d -= soften
 			if math.abs(d) > size then
 				vx, vy, vz = imx, imy, imz
 			else
@@ -545,6 +554,7 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 			for i = 1, #verts do
 				local v = verts[i]
 				local d, gx, gy, gz = SdfField.fieldGrad(root, v.X, v.Y, v.Z)
+				d -= soften
 				if d > -clamp and d < clamp then
 					verts[i] = Vector3.new(v.X - d * gx, v.Y - d * gy, v.Z - d * gz)
 				end
@@ -615,6 +625,7 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 							dx -= dn * gx; dy -= dn * gy; dz -= dn * gz
 							local tx, ty, tz = v.X + dx * 0.5, v.Y + dy * 0.5, v.Z + dz * 0.5
 							local d, rgx, rgy, rgz = SdfField.fieldGrad(root, tx, ty, tz)
+							d -= soften
 							local nvx, nvy, nvz
 							if d > -clamp and d < clamp then
 								nvx, nvy, nvz = tx - d * rgx, ty - d * rgy, tz - d * rgz
@@ -680,6 +691,7 @@ function SdfMesher3.build(root: SdfField.Node, config: Config?): (any, string)
 			local pa, pb = verts[lo], verts[hi]
 			local mx, my, mz = (pa.X + pb.X) * 0.5, (pa.Y + pb.Y) * 0.5, (pa.Z + pb.Z) * 0.5
 			local d, gx, gy, gz = SdfField.fieldGrad(root, mx, my, mz)
+			d -= soften
 			local elen = (pb - pa).Magnitude
 			local lim = elen * 0.5
 			local px, py, pz = mx, my, mz

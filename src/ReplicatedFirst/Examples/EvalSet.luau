@@ -125,12 +125,18 @@ function EvalSet.runV3(opts: RunOpts?): Model
 	-- primitives. Pass uniform=false / subdivide=0 for the fast adaptive look.
 	local uniform = (o :: any).uniform ~= false
 	local subdivide = (o :: any).subdivide or 2
+	-- `edgeSoften` (default off) rounds every convex edge by a tiny radius for the
+	-- injection-moulded plastic-toy look. Lovely on flat-faced/hard-edged shapes
+	-- (boxes); on precise curves it inflates the surface and adds a faint wave, so
+	-- it's opt-in. Try runV3({ edgeSoften = 0.1 }).
+	local edgeSoften = (o :: any).edgeSoften or 0
 	local summary = {}
 	for i, s in ipairs(SHAPES) do
 		local res, msg = SdfMesher3.build(s.node, {
 			detailTol = detailTol,
 			uniform = uniform,
 			subdivide = subdivide,
+			edgeSoften = edgeSoften,
 			vertexColorFn = makeShader(s.color, sun),
 			renderFidelity = Enum.RenderFidelity.Precise,
 			collisionFidelity = Enum.CollisionFidelity.Box,
